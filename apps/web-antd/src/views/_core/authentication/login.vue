@@ -2,6 +2,7 @@
 import type { VbenFormSchema } from '@vben/common-ui';
 
 import { computed } from 'vue';
+import { useRoute } from 'vue-router';
 
 import { AuthenticationLogin, z } from '@vben/common-ui';
 import { $t } from '@vben/locales';
@@ -11,6 +12,7 @@ import { useAuthStore } from '#/store';
 defineOptions({ name: 'Login' });
 
 const authStore = useAuthStore();
+const route = useRoute();
 
 const formSchema = computed((): VbenFormSchema[] => {
   return [
@@ -36,12 +38,37 @@ const formSchema = computed((): VbenFormSchema[] => {
     },
   ];
 });
+
+async function handleSso() {
+  const redirect =
+    typeof route.query.redirect === 'string'
+      ? decodeURIComponent(route.query.redirect)
+      : undefined;
+  await authStore.startSsoLogin(redirect);
+}
 </script>
 
 <template>
   <AuthenticationLogin
     :form-schema="formSchema"
     :loading="authStore.loginLoading"
+    :show-code-login="false"
+    :show-forget-password="false"
+    :show-qrcode-login="false"
+    :show-register="false"
+    :show-third-party-login="false"
     @submit="authStore.authLogin"
-  />
+  >
+    <template #to-register>
+      <div class="mt-4 text-center text-sm">
+        <button
+          class="vben-link text-sm font-normal"
+          type="button"
+          @click="handleSso"
+        >
+          使用 AuthServer 单点登录
+        </button>
+      </div>
+    </template>
+  </AuthenticationLogin>
 </template>

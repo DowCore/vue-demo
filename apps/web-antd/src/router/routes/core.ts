@@ -57,6 +57,23 @@ const coreRoutes: RouteRecordRaw[] = [
         },
       },
       {
+        name: 'AuthSso',
+        path: 'sso',
+        component: () => import('#/views/_core/authentication/oidc-sso.vue'),
+        meta: {
+          title: 'SSO',
+        },
+      },
+      {
+        name: 'OidcCallback',
+        path: 'oidc-callback',
+        component: () =>
+          import('#/views/_core/authentication/oidc-callback.vue'),
+        meta: {
+          title: 'OIDC Callback',
+        },
+      },
+      {
         name: 'CodeLogin',
         path: 'code-login',
         component: () => import('#/views/_core/authentication/code-login.vue'),

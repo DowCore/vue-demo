@@ -11,6 +11,11 @@ export default defineConfig(async () => {
             secure: false,
             target: 'https://localhost:7600',
           },
+          '/.well-known': {
+            changeOrigin: true,
+            secure: false,
+            target: 'https://localhost:7600',
+          },
           '/api': {
             changeOrigin: true,
             secure: false,

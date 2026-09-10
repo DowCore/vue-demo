@@ -20,11 +20,24 @@ import { refreshTokenApi } from './core';
 
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
 
+function unwrapAbpResponse() {
+  return {
+    fulfilled: (response: any) => {
+      if (response?.config?.responseReturn === 'raw') {
+        return response;
+      }
+      return response?.data ?? response;
+    },
+  };
+}
+
 function createRequestClient(baseURL: string, options?: RequestClientOptions) {
   const client = new RequestClient({
     ...options,
     baseURL,
   });
+
+  client.addResponseInterceptor(unwrapAbpResponse());
 
   async function doReAuthenticate() {
     const accessStore = useAccessStore();
@@ -43,6 +56,9 @@ function createRequestClient(baseURL: string, options?: RequestClientOptions) {
   async function doRefreshToken() {
     const accessStore = useAccessStore();
     const resp = await refreshTokenApi();
+    if (!resp.accessToken) {
+      throw new Error('Refresh token did not return access_token');
+    }
     accessStore.setAccessToken(resp.accessToken);
     if (resp.refreshToken) {
       accessStore.setRefreshToken(resp.refreshToken);
@@ -94,10 +110,25 @@ function createRequestClient(baseURL: string, options?: RequestClientOptions) {
 }
 
 export const requestClient = createRequestClient(apiURL, {
-  responseReturn: 'data',
+  responseReturn: 'body',
 });
 
 export const baseRequestClient = new RequestClient({
   baseURL: apiURL,
-  responseReturn: 'data',
+  responseReturn: 'body',
 });
+
+baseRequestClient.addResponseInterceptor(unwrapAbpResponse());
+baseRequestClient.addResponseInterceptor(
+  errorMessageResponseInterceptor((msg: string, error) => {
+    const responseData = error?.response?.data ?? {};
+    const errorMessage =
+      responseData?.error_description ||
+      (typeof responseData?.error === 'string'
+        ? responseData.error
+        : responseData?.error?.message) ||
+      responseData?.message ||
+      '';
+    message.error(errorMessage || msg);
+  }),
+);
