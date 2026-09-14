@@ -7,7 +7,7 @@ import { LOGIN_PATH } from '@vben/constants';
 import { preferences } from '@vben/preferences';
 import { resetAllStores, useAccessStore, useUserStore } from '@vben/stores';
 
-import { notification } from 'ant-design-vue';
+import { message, notification } from 'ant-design-vue';
 import { defineStore } from 'pinia';
 
 import {
@@ -20,6 +20,8 @@ import {
 } from '#/api';
 import { $t } from '#/locales';
 import { beginAuthorizationCodeLogin, takeOidcReturnUrl } from '#/utils/oidc';
+import { resolveAndSetTenantByName } from '#/utils/resolve-tenant';
+import { getLocalTenantName, syncTenantFromAccessToken } from '#/utils/tenant';
 
 export const useAuthStore = defineStore('auth', () => {
   const accessStore = useAccessStore();
@@ -48,6 +50,7 @@ export const useAuthStore = defineStore('auth', () => {
       accessStore.setRefreshToken(refreshToken);
     }
 
+    syncTenantFromAccessToken(accessToken);
     clearApplicationConfiguration();
     const fetchUserInfoResult = await fetchUserInfo();
     const accessCodes = await getAccessCodesApi();
@@ -84,7 +87,18 @@ export const useAuthStore = defineStore('auth', () => {
     let userInfo: null | UserInfo = null;
     try {
       loginLoading.value = true;
-      const { accessToken, refreshToken } = await loginApi(params);
+
+      // 租户由登录页 TenantBox 预先选好；此处确保 __tenant 与名称一致
+      await resolveAndSetTenantByName(
+        typeof params.tenantName === 'string'
+          ? params.tenantName
+          : (getLocalTenantName() ?? ''),
+      );
+
+      const { accessToken, refreshToken } = await loginApi({
+        password: params.password,
+        username: params.username,
+      });
 
       if (!accessToken) {
         notification.error({
@@ -159,6 +173,7 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       // ignore
     }
+    // 保留本地租户选择，方便切换后重新登录；切回宿主由切换器显式 clear
     clearApplicationConfiguration();
     resetAllStores();
     accessStore.setLoginExpired(false);
@@ -179,6 +194,27 @@ export const useAuthStore = defineStore('auth', () => {
     return userInfo;
   }
 
+  /** 权限变更后重拉 grantedPolicies 与动态菜单 */
+  async function refreshAccessConfiguration() {
+    clearApplicationConfiguration();
+    const accessCodes = await getAccessCodesApi();
+    accessStore.setAccessCodes(accessCodes);
+
+    const [{ generateAccess }, { accessRoutes }] = await Promise.all([
+      import('#/router/access'),
+      import('#/router/routes'),
+    ]);
+    const { accessibleMenus, accessibleRoutes } = await generateAccess({
+      roles: accessCodes,
+      router,
+      routes: accessRoutes,
+    });
+    accessStore.setAccessMenus(accessibleMenus);
+    accessStore.setAccessRoutes(accessibleRoutes);
+    accessStore.setIsAccessChecked(true);
+    message.info('已刷新当前用户权限与菜单');
+  }
+
   function $reset() {
     loginLoading.value = false;
   }
@@ -190,6 +226,7 @@ export const useAuthStore = defineStore('auth', () => {
     fetchUserInfo,
     loginLoading,
     logout,
+    refreshAccessConfiguration,
     startSsoLogin,
   };
 });

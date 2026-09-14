@@ -1,13 +1,25 @@
 <script lang="ts" setup>
+import type { IdentityUser } from '#/api';
+
 import { onMounted, reactive, ref } from 'vue';
 
-import { Button, Form, Input, Modal, Space, Switch, Table, message } from 'ant-design-vue';
+import { AccessControl } from '@vben/access';
+
+import {
+  Button,
+  Form,
+  Input,
+  message,
+  Modal,
+  Space,
+  Switch,
+  Table,
+} from 'ant-design-vue';
 
 import {
   createUserApi,
   deleteUserApi,
   getUsersApi,
-  type IdentityUser,
   updateUserApi,
 } from '#/api';
 
@@ -102,7 +114,9 @@ onMounted(load);
         @press-enter="load"
       />
       <Button type="primary" @click="load">查询</Button>
-      <Button type="primary" @click="openCreate">新建</Button>
+      <AccessControl :codes="['AbpIdentity.Users.Create']" type="code">
+        <Button type="primary" @click="openCreate">新建</Button>
+      </AccessControl>
     </Space>
     <Table
       :data-source="items"
@@ -128,8 +142,16 @@ onMounted(load);
       <Table.Column title="操作" width="180">
         <template #default="{ record }">
           <Space>
-            <Button size="small" type="link" @click="openEdit(record)">编辑</Button>
-            <Button danger size="small" type="link" @click="remove(record)">删除</Button>
+            <AccessControl :codes="['AbpIdentity.Users.Update']" type="code">
+              <Button size="small" type="link" @click="openEdit(record)">
+                编辑
+              </Button>
+            </AccessControl>
+            <AccessControl :codes="['AbpIdentity.Users.Delete']" type="code">
+              <Button danger size="small" type="link" @click="remove(record)">
+                删除
+              </Button>
+            </AccessControl>
           </Space>
         </template>
       </Table.Column>

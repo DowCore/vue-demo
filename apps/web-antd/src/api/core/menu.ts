@@ -1,6 +1,10 @@
 import type { RouteRecordStringComponent } from '@vben/types';
 
-/** 前端模式使用本地路由，不请求后端菜单 */
+import { requestClient } from '#/api/request';
+
+/**
+ * 当前用户动态菜单（Vben backend / mixed）
+ */
 export async function getAllMenusApi(): Promise<RouteRecordStringComponent[]> {
-  return [];
+  return requestClient.get<RouteRecordStringComponent[]>('/api/menu/all');
 }

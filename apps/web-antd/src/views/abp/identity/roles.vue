@@ -1,15 +1,28 @@
 <script lang="ts" setup>
+import type { IdentityRole } from '#/api';
+
 import { onMounted, reactive, ref } from 'vue';
 
-import { Button, Form, Input, Modal, Space, Switch, Table, message } from 'ant-design-vue';
+import { AccessControl } from '@vben/access';
+
+import {
+  Button,
+  Form,
+  Input,
+  message,
+  Modal,
+  Space,
+  Switch,
+  Table,
+} from 'ant-design-vue';
 
 import {
   createRoleApi,
   deleteRoleApi,
   getRolesApi,
-  type IdentityRole,
   updateRoleApi,
 } from '#/api';
+import RolePermissionModal from '#/components/permission/role-permission-modal.vue';
 
 const loading = ref(false);
 const items = ref<IdentityRole[]>([]);
@@ -23,6 +36,9 @@ const form = reactive({
   isPublic: true,
   name: '',
 });
+
+const permissionOpen = ref(false);
+const permissionRoleName = ref('');
 
 async function load() {
   loading.value = true;
@@ -55,17 +71,20 @@ function openEdit(record: IdentityRole) {
   modalOpen.value = true;
 }
 
+function openPermissions(record: IdentityRole) {
+  permissionRoleName.value = record.name;
+  permissionOpen.value = true;
+}
+
 async function save() {
   const payload = {
     isDefault: form.isDefault,
     isPublic: form.isPublic,
     name: form.name,
   };
-  if (editingId.value) {
-    await updateRoleApi(editingId.value, payload);
-  } else {
-    await createRoleApi(payload);
-  }
+  await (editingId.value
+    ? updateRoleApi(editingId.value, payload)
+    : createRoleApi(payload));
   modalOpen.value = false;
   message.success('已保存');
   await load();
@@ -91,7 +110,9 @@ onMounted(load);
         @press-enter="load"
       />
       <Button type="primary" @click="load">查询</Button>
-      <Button type="primary" @click="openCreate">新建</Button>
+      <AccessControl :codes="['AbpIdentity.Roles.Create']" type="code">
+        <Button type="primary" @click="openCreate">新建</Button>
+      </AccessControl>
     </Space>
     <Table
       :data-source="items"
@@ -108,24 +129,42 @@ onMounted(load);
     >
       <Table.Column data-index="name" title="名称" />
       <Table.Column title="默认">
-        <template #default="{ record }">{{ record.isDefault ? '是' : '否' }}</template>
+        <template #default="{ record }">
+          {{ record.isDefault ? '是' : '否' }}
+        </template>
       </Table.Column>
       <Table.Column title="公开">
-        <template #default="{ record }">{{ record.isPublic ? '是' : '否' }}</template>
+        <template #default="{ record }">
+          {{ record.isPublic ? '是' : '否' }}
+        </template>
       </Table.Column>
-      <Table.Column title="操作" width="180">
+      <Table.Column title="操作" width="260">
         <template #default="{ record }">
           <Space>
-            <Button size="small" type="link" @click="openEdit(record)">编辑</Button>
-            <Button
-              :disabled="record.isStatic"
-              danger
-              size="small"
-              type="link"
-              @click="remove(record)"
+            <AccessControl
+              :codes="['AbpIdentity.Roles.ManagePermissions']"
+              type="code"
             >
-              删除
-            </Button>
+              <Button size="small" type="link" @click="openPermissions(record)">
+                权限
+              </Button>
+            </AccessControl>
+            <AccessControl :codes="['AbpIdentity.Roles.Update']" type="code">
+              <Button size="small" type="link" @click="openEdit(record)">
+                编辑
+              </Button>
+            </AccessControl>
+            <AccessControl :codes="['AbpIdentity.Roles.Delete']" type="code">
+              <Button
+                :disabled="record.isStatic"
+                danger
+                size="small"
+                type="link"
+                @click="remove(record)"
+              >
+                删除
+              </Button>
+            </AccessControl>
           </Space>
         </template>
       </Table.Column>
@@ -147,5 +186,10 @@ onMounted(load);
         </Form.Item>
       </Form>
     </Modal>
+
+    <RolePermissionModal
+      v-model:open="permissionOpen"
+      :role-name="permissionRoleName"
+    />
   </div>
 </template>

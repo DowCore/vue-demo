@@ -1,5 +1,4 @@
 import {
-  appCopyrightPreferences,
   defineOverridesPreferences,
   definePreferencesExtension,
 } from '@vben/preferences';
@@ -15,15 +14,27 @@ interface WebAntdPreferencesExtension {
  * @description 项目配置文件
  * 只需要覆盖项目中的一部分配置，不需要的配置不用覆盖，会自动使用默认配置
  * !!! 更改配置后请清空缓存，否则可能不生效
+ *
+ * 注意：accessMode 必须为 backend（动态菜单）。若本地曾缓存为 frontend，
+ * main.ts 会在启动时强制写回 backend。
  */
 export const overridesPreferences = defineOverridesPreferences({
   // overrides
   app: {
-    accessMode: 'frontend',
+    accessMode: 'backend',
+    defaultHomePath: '/dashboard/workspace',
     enableRefreshToken: true,
     name: import.meta.env.VITE_APP_TITLE,
   },
-  copyright: appCopyrightPreferences,
+  copyright: {
+    companyName: 'Meta.Dow',
+    companySiteLink: '',
+    date: '2026',
+    enable: true,
+    icp: '',
+    icpLink: '',
+    settingShow: false,
+  },
 });
 
 export const preferencesExtension =

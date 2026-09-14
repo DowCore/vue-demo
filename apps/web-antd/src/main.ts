@@ -1,4 +1,4 @@
-import { initPreferences } from '@vben/preferences';
+import { initPreferences, updatePreferences } from '@vben/preferences';
 import { unmountGlobalLoading } from '@vben/utils';
 
 import { overridesPreferences, preferencesExtension } from './preferences';
@@ -18,6 +18,20 @@ async function initApplication() {
     extension: preferencesExtension,
     namespace,
     overrides: overridesPreferences,
+  });
+
+  // 本项目侧栏依赖后端 /api/menu/all；本地缓存若曾写入 frontend 会覆盖 overrides，这里强制回 backend
+  updatePreferences({
+    app: {
+      accessMode: 'backend',
+      defaultHomePath: '/dashboard/workspace',
+    },
+    copyright: {
+      companyName: 'Meta.Dow',
+      companySiteLink: '',
+      date: '2026',
+      settingShow: false,
+    },
   });
 
   // 启动应用并挂载
