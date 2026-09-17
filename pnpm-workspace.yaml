@@ -213,6 +213,7 @@ catalog:
   zod-defaults: ^0.2.3
 
 allowBuilds:
+  '@logicflow/core': set this to true or false
   '@parcel/watcher': true
   core-js: true
   esbuild: true

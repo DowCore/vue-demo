@@ -7,6 +7,7 @@ export * from './identity/organization-units';
 export * from './identity/roles';
 export * from './identity/users';
 export * from './permission-management/permissions';
+export * from './saas/orchestration';
 export * from './saas/tenant-resolve';
 export * from './saas/tenants';
 export * from './setting-management/emailing';
