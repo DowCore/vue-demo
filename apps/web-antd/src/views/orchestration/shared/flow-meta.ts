@@ -34,6 +34,7 @@ export type FlowExecutableKind =
   | 'HttpCall'
   | 'Log'
   | 'Mask'
+  | 'RabbitMqPublish'
   | 'Throw';
 
 export type FlowNodeKind =
@@ -48,6 +49,7 @@ export const EXECUTABLE_NODE_KINDS: FlowExecutableKind[] = [
   'Code',
   'Throw',
   'Mask',
+  'RabbitMqPublish',
 ];
 
 export function isExecutableKind(kind: string): boolean {
@@ -154,6 +156,16 @@ export const NODE_PALETTE: NodePaletteItem[] = [
     icon: '***',
     color: '#c41d7f',
     bg: '#fff0f6',
+  },
+  {
+    kind: 'RabbitMqPublish',
+    label: 'Rabbit广播',
+    desc: '本地 RabbitMQ fanout 广播 JSON',
+    shape: 'flow-rabbit',
+    geometry: 'rect',
+    icon: 'MQ',
+    color: '#d48806',
+    bg: '#fffbe6',
   },
   {
     kind: 'End',

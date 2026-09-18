@@ -5,6 +5,7 @@ import type {
   InputParameter,
   MaskRule,
   NodeBinding,
+  OutputMapItem,
   OutputParameter,
 } from '../shared/dsl-graph';
 import type { FlowNodeKind } from '../shared/flow-meta';
@@ -29,6 +30,7 @@ import { usePreferences } from '@vben/preferences';
 import {
   AutoComplete,
   Button,
+  Checkbox,
   Divider,
   Drawer,
   Form,
@@ -78,6 +80,7 @@ import {
 } from '../shared/flow-meta';
 import MaskRulesEditor from '../shared/mask-rules-editor.vue';
 import NodeIoEditor from '../shared/node-io-editor.vue';
+import OutputMapFieldsEditor from '../shared/output-map-fields-editor.vue';
 import SchemaParamEditor from '../shared/schema-param-editor.vue';
 import {
   buildSampleInputJson,
@@ -143,6 +146,14 @@ const selected = reactive({
   itemField: 'rows',
   maskRulesJson: '[]',
   finalOutputsJson: '[]',
+  exchange: '',
+  exchangeType: 'fanout',
+  routingKey: '',
+  persistent: true,
+  onError: 'fail',
+  payloadMode: 'object',
+  payloadFrom: '',
+  payloadJson: '[]',
   when: '',
   combine: '',
   isDefault: false,
@@ -428,7 +439,15 @@ const paletteGroups = computed(() => [
   {
     title: '动作节点（方法调用）',
     items: NODE_PALETTE.filter((x) =>
-      ['Assign', 'Code', 'HttpCall', 'Log', 'Mask', 'Throw'].includes(x.kind),
+      [
+        'Assign',
+        'Code',
+        'HttpCall',
+        'Log',
+        'Mask',
+        'RabbitMqPublish',
+        'Throw',
+      ].includes(x.kind),
     ),
   },
 ]);
@@ -460,6 +479,20 @@ const nodeMaskRules = computed<MaskRule[]>({
   },
   set: (value) => {
     selected.maskRulesJson = JSON.stringify(value || [], null, 0);
+  },
+});
+
+const rabbitPayloadItems = computed<OutputMapItem[]>({
+  get: () => {
+    try {
+      const parsed = JSON.parse(selected.payloadJson || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+  set: (value) => {
+    selected.payloadJson = JSON.stringify(value || [], null, 0);
   },
 });
 
@@ -562,6 +595,14 @@ function applySelection(kind: '' | 'edge' | 'node', data?: any) {
           ? JSON.stringify(contract.outputs || [], null, 0)
           : '[]'),
     );
+    selected.exchange = String(p.exchange || '');
+    selected.exchangeType = String(p.exchangeType || 'fanout');
+    selected.routingKey = String(p.routingKey || '');
+    selected.persistent = p.persistent !== false;
+    selected.onError = String(p.onError || 'fail');
+    selected.payloadMode = String(p.payloadMode || 'object');
+    selected.payloadFrom = String(p.payloadFrom || '');
+    selected.payloadJson = String(p.payloadJson || '[]');
   } else {
     selected.when = '';
     selected.combine = String(data.properties?.combine || '');
@@ -615,6 +656,14 @@ function syncSelectionToCanvas() {
       itemField: selected.itemField || 'rows',
       maskRulesJson: selected.maskRulesJson || '[]',
       finalOutputsJson: selected.finalOutputsJson || '[]',
+      exchange: selected.exchange || '',
+      exchangeType: selected.exchangeType || 'fanout',
+      routingKey: selected.routingKey || '',
+      persistent: selected.persistent !== false,
+      onError: selected.onError || 'fail',
+      payloadMode: selected.payloadMode || 'object',
+      payloadFrom: selected.payloadFrom || '',
+      payloadJson: selected.payloadJson || '[]',
     });
   } else if (selected.kind === 'edge') {
     canvas.setEdgeBranch(selected.id, {
@@ -949,6 +998,14 @@ watch(
     selected.itemField,
     selected.maskRulesJson,
     selected.finalOutputsJson,
+    selected.exchange,
+    selected.exchangeType,
+    selected.routingKey,
+    selected.persistent,
+    selected.onError,
+    selected.payloadMode,
+    selected.payloadFrom,
+    selected.payloadJson,
     selected.when,
     selected.combine,
     selected.isDefault,
@@ -1203,7 +1260,9 @@ onBeforeUnmount(() => {
                                     ? 'lucide:octagon-alert'
                                     : item.kind === 'Mask'
                                       ? 'lucide:eye-off'
-                                      : 'lucide:scroll-text'
+                                      : item.kind === 'RabbitMqPublish'
+                                        ? 'lucide:radio'
+                                        : 'lucide:scroll-text'
                     "
                   />
                 </div>
@@ -1547,6 +1606,91 @@ onBeforeUnmount(() => {
                 </Form.Item>
               </template>
 
+              <template v-if="selected.nodeType === 'RabbitMqPublish'">
+                <div class="mb-1 text-sm font-medium">RabbitMQ 广播</div>
+                <div
+                  class="mb-2 text-[11px] leading-relaxed text-muted-foreground"
+                >
+                  默认
+                  <code>fanout</code>
+                  交换机
+                  <code>Meta.Dow.Orchestration.Broadcast</code>
+                  ：所有绑定队列都会收到同一份 JSON。外部程序自建 Queue 并 Bind
+                  到该交换机即可订阅。与内部 EventBus（
+                  <code>Meta.Dow</code>
+                  ）隔离。
+                </div>
+                <Form.Item label="交换机">
+                  <Input
+                    v-model:value="selected.exchange"
+                    class="font-mono"
+                    placeholder="Meta.Dow.Orchestration.Broadcast"
+                  />
+                </Form.Item>
+                <Form.Item label="类型">
+                  <Select
+                    v-model:value="selected.exchangeType"
+                    class="w-full"
+                    :options="[
+                      { label: 'fanout 广播（推荐）', value: 'fanout' },
+                      { label: 'topic 主题路由', value: 'topic' },
+                      { label: 'direct 直连', value: 'direct' },
+                    ]"
+                  />
+                </Form.Item>
+                <Form.Item
+                  v-if="selected.exchangeType !== 'fanout'"
+                  label="路由键"
+                >
+                  <Input
+                    v-model:value="selected.routingKey"
+                    class="font-mono"
+                    placeholder="orders.{{orderId}}"
+                  />
+                </Form.Item>
+                <Form.Item label="持久化">
+                  <Checkbox v-model:checked="selected.persistent">
+                    persistent
+                  </Checkbox>
+                </Form.Item>
+                <Form.Item label="失败策略">
+                  <Select
+                    v-model:value="selected.onError"
+                    class="w-full"
+                    :options="[
+                      { label: '失败中断流程', value: 'fail' },
+                      { label: '忽略并继续', value: 'ignore' },
+                    ]"
+                  />
+                </Form.Item>
+                <div
+                  class="mb-2 rounded-md border border-dashed border-amber-400/50 bg-amber-50/30 p-2 dark:bg-amber-950/20"
+                >
+                  <div
+                    class="mb-1 text-[11px] font-medium text-amber-800 dark:text-amber-200"
+                  >
+                    消息体字段 = 发出内容（同 End
+                    出参写法；本节点不再单独配「输出参数」）
+                  </div>
+                  <div
+                    class="mb-1.5 text-[10px] leading-relaxed text-muted-foreground"
+                  >
+                    配
+                    <code>name</code>
+                    /
+                    <code>from</code>
+                    （可先在上方「输入参数」映射短名，再
+                    <code>from=orderId</code>
+                    ）。object/array 可继续嵌套 map。留空则发送整包输入参数。
+                  </div>
+                  <OutputMapFieldsEditor
+                    v-model:model-value="rabbitPayloadItems"
+                    from-placeholder="相对本节点入参：orderId / amount"
+                    @update:model-value="dirty = true"
+                  />
+                </div>
+              </template>
+
               <template
                 v-if="
                   isExecutableKind(selected.nodeType) &&
@@ -1556,7 +1700,8 @@ onBeforeUnmount(() => {
                 <Form.Item
                   v-if="
                     selected.nodeType !== 'HttpCall' &&
-                    selected.nodeType !== 'Throw'
+                    selected.nodeType !== 'Throw' &&
+                    selected.nodeType !== 'RabbitMqPublish'
                   "
                   label="执行方式"
                 >
@@ -1579,14 +1724,27 @@ onBeforeUnmount(() => {
                 <div
                   class="mb-2 text-[11px] leading-relaxed text-muted-foreground"
                 >
-                  下游可写 <code>{{ selected.refName || 'ref' }}.出参名</code>；
-                  出参名全局不冲突时可直接写短名。
+                  <template v-if="selected.nodeType === 'RabbitMqPublish'">
+                    消息内容以「消息体字段」为准（同 End
+                    出参写法）。引用名仅用于下游看回执：
+                    <code>{{ selected.refName || 'mqBroadcast' }}.published</code>
+                    （自动写出，无需再配出参）。
+                  </template>
+                  <template v-else>
+                    下游可写
+                    <code>{{ selected.refName || 'ref' }}.出参名</code>
+                    ；出参名全局不冲突时可直接写短名。
+                  </template>
                 </div>
                 <Divider class="my-3" />
                 <template v-if="selected.nodeType !== 'Throw'">
                   <div class="mb-1 text-sm font-medium">
                     {{
-                      selected.nodeType === 'HttpCall' ? '调用参数' : '输入参数'
+                      selected.nodeType === 'HttpCall'
+                        ? '调用参数'
+                        : selected.nodeType === 'RabbitMqPublish'
+                          ? '输入参数（映射进本节点后再进消息体）'
+                          : '输入参数'
                     }}
                   </div>
                   <NodeIoEditor
@@ -1596,14 +1754,16 @@ onBeforeUnmount(() => {
                     empty-text="添加入参映射（路径或字面量）"
                     @change="dirty = true"
                   />
-                  <div class="mb-1 mt-3 text-sm font-medium">输出参数</div>
-                  <NodeIoEditor
-                    v-model:model-value="nodeOutputs"
-                    mode="outputs"
-                    :node-ref="selected.refName || selected.id"
-                    empty-text="声明出参名；下游优先用短名"
-                    @change="dirty = true"
-                  />
+                  <template v-if="selected.nodeType !== 'RabbitMqPublish'">
+                    <div class="mb-1 mt-3 text-sm font-medium">输出参数</div>
+                    <NodeIoEditor
+                      v-model:model-value="nodeOutputs"
+                      mode="outputs"
+                      :node-ref="selected.refName || selected.id"
+                      empty-text="声明出参名；下游优先用短名"
+                      @change="dirty = true"
+                    />
+                  </template>
                   <Divider class="my-3" />
                   <div class="mb-1 text-sm font-medium">异常处理</div>
                   <div class="mb-2 text-[11px] text-muted-foreground">

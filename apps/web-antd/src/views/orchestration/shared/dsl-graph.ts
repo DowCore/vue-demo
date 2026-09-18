@@ -159,6 +159,15 @@ export interface DslNode {
   failItems?: ConditionItem[];
   failCombine?: string;
   entry?: { items: ConditionItem[]; combine?: string };
+  /** RabbitMqPublish */
+  exchange?: string;
+  exchangeType?: string;
+  routingKey?: string;
+  persistent?: boolean;
+  onError?: string;
+  payloadMode?: string;
+  payloadFrom?: string;
+  payload?: { item?: OutputMapItem[] };
 }
 
 export interface DslEdge {
@@ -475,6 +484,14 @@ return {
     itemField: 'rows',
     maskRulesJson: '[]',
     finalOutputsJson: '[]',
+    exchange: '',
+    exchangeType: 'fanout',
+    routingKey: '',
+    persistent: true,
+    onError: 'fail',
+    payloadMode: 'object',
+    payloadFrom: '',
+    payloadJson: '[]',
   };
 
   if (normalized === 'Condition') {
@@ -526,6 +543,31 @@ return {
       { name: 'amount', from: 'input.amount' },
     ]);
     base.outputsJson = serializeBindings([{ name: 'level', from: 'level' }]);
+  }
+
+  if (normalized === 'RabbitMqPublish') {
+    base.refName = 'mqBroadcast';
+    base.exchange = 'Meta.Dow.Orchestration.Broadcast';
+    base.exchangeType = 'fanout';
+    base.routingKey = '';
+    base.persistent = true;
+    base.onError = 'fail';
+    base.payloadMode = 'object';
+    base.asyncMode = false;
+    base.inputsJson = serializeBindings([
+      { name: 'orderId', from: 'input.order.id' },
+      { name: 'amount', from: 'input.amount' },
+    ]);
+    base.payloadJson = JSON.stringify(
+      [
+        { name: 'orderId', type: 'string', from: 'orderId' },
+        { name: 'amount', type: 'number', from: 'amount' },
+      ],
+      null,
+      0,
+    );
+    // 消息体字段即「输出内容」；回执由执行器自动写入，无需配 outputs
+    base.outputsJson = '[]';
   }
 
   if (normalized === 'Throw') {
@@ -732,6 +774,14 @@ export function dslToGraph(
           null,
           0,
         ),
+        exchange: node.exchange || '',
+        exchangeType: node.exchangeType || 'fanout',
+        routingKey: node.routingKey || '',
+        persistent: node.persistent !== false,
+        onError: node.onError || 'fail',
+        payloadMode: node.payloadMode || 'object',
+        payloadFrom: node.payloadFrom || '',
+        payloadJson: JSON.stringify(node.payload?.item || [], null, 0),
       },
     };
   });
@@ -853,6 +903,24 @@ export function graphToDsl(
       try {
         const rules = JSON.parse(String(p.maskRulesJson || '[]'));
         if (Array.isArray(rules) && rules.length > 0) node.maskRules = rules;
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (type === 'RabbitMqPublish') {
+      node.exchange = String(p.exchange || '').trim() || undefined;
+      node.exchangeType = String(p.exchangeType || 'fanout') || 'fanout';
+      node.routingKey = String(p.routingKey || '') || undefined;
+      node.persistent = p.persistent !== false;
+      node.onError = String(p.onError || 'fail') || 'fail';
+      node.payloadMode = String(p.payloadMode || 'object') || 'object';
+      node.payloadFrom = String(p.payloadFrom || '').trim() || undefined;
+      try {
+        const items = JSON.parse(String(p.payloadJson || '[]'));
+        if (Array.isArray(items) && items.length > 0) {
+          node.payload = { item: items };
+        }
       } catch {
         /* ignore */
       }
