@@ -29,6 +29,8 @@ import {
   deleteDataSourceApi,
   getDataSourceProvidersApi,
   getDataSourcesApi,
+  testDataSourceApi,
+  testSavedDataSourceApi,
   updateDataSourceApi,
 } from '#/api/saas/orchestration';
 
@@ -36,6 +38,7 @@ defineOptions({ name: 'OrchestrationDataSources' });
 
 const loading = ref(false);
 const saving = ref(false);
+const testing = ref(false);
 const items = ref<DataSourceItem[]>([]);
 const total = ref(0);
 const filter = ref('');
@@ -82,7 +85,7 @@ const columns = [
     key: 'hint',
     ellipsis: true,
   },
-  { title: '操作', key: 'actions', width: 160 },
+  { title: '操作', key: 'actions', width: 220 },
 ];
 
 async function loadProviders() {
@@ -201,6 +204,53 @@ function confirmDelete(row: DataSourceItem) {
   });
 }
 
+function showTestResult(res: {
+  elapsedMs: number;
+  message?: string;
+  success: boolean;
+}) {
+  const detail = res.message
+    ? `${res.message}（${res.elapsedMs} ms）`
+    : `${res.elapsedMs} ms`;
+  if (res.success) {
+    message.success(detail);
+  } else {
+    message.error(detail || '连接失败');
+  }
+}
+
+async function testFromModal() {
+  if (!form.provider) {
+    message.warning('请选择数据库类型');
+    return;
+  }
+  if (!form.connectionString.trim() && !editingId.value) {
+    message.warning('请填写连接串后再测试');
+    return;
+  }
+  testing.value = true;
+  try {
+    const res = await testDataSourceApi({
+      id: editingId.value || undefined,
+      provider: form.provider,
+      connectionString: form.connectionString.trim() || undefined,
+    });
+    showTestResult(res);
+  } finally {
+    testing.value = false;
+  }
+}
+
+async function testSaved(row: DataSourceItem) {
+  testing.value = true;
+  try {
+    const res = await testSavedDataSourceApi(row.id);
+    showTestResult(res);
+  } finally {
+    testing.value = false;
+  }
+}
+
 function accessLabel(mode: DataSourceAccessMode) {
   return accessModeOptions.find((x) => x.value === mode)?.label || String(mode);
 }
@@ -292,6 +342,19 @@ onMounted(async () => {
         <template v-else-if="column.key === 'actions'">
           <Space>
             <AccessControl
+              :codes="['Orchestration.DataSources.Default']"
+              type="code"
+            >
+              <Button
+                :loading="testing"
+                size="small"
+                type="link"
+                @click="testSaved(record as DataSourceItem)"
+              >
+                测试
+              </Button>
+            </AccessControl>
+            <AccessControl
               :codes="['Orchestration.DataSources.Update']"
               type="code"
             >
@@ -323,12 +386,24 @@ onMounted(async () => {
 
     <Modal
       v-model:open="modalOpen"
-      :title="editingId ? '编辑数据连接' : '新建数据连接'"
       :confirm-loading="saving"
+      :title="editingId ? '编辑数据连接' : '新建数据连接'"
       :width="640"
       destroy-on-close
       @ok="save"
     >
+      <template #footer>
+        <div class="flex items-center justify-between">
+          <Button :loading="testing" @click="testFromModal">
+            <template #icon><IconifyIcon icon="lucide:unplug" /></template>
+            测试连接
+          </Button>
+          <Space>
+            <Button @click="modalOpen = false">取消</Button>
+            <Button :loading="saving" type="primary" @click="save">确定</Button>
+          </Space>
+        </div>
+      </template>
       <Form layout="vertical" class="mt-2">
         <Form.Item label="编码 code" required>
           <Input

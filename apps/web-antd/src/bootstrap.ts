@@ -8,6 +8,7 @@ import '@vben/styles';
 import '@vben/styles/antd';
 
 import { useTitle } from '@vueuse/core';
+import { message } from 'ant-design-vue';
 
 import { $t, setupI18n } from '#/locales';
 
@@ -55,6 +56,16 @@ async function bootstrap(namespace: string) {
 
   // 配置路由及路由守卫
   app.use(router);
+
+  router.onError((error) => {
+    console.error('[Router]', error);
+    const text = error instanceof Error ? error.message : String(error);
+    message.error(`页面加载失败：${text.slice(0, 160)}`);
+  });
+
+  app.config.errorHandler = (err, _instance, info) => {
+    console.error(`[AppError] ${info}`, err);
+  };
 
   // 配置Motion插件
   const { MotionPlugin } = await import('@vben/plugins/motion');

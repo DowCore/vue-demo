@@ -79,6 +79,7 @@ import ExecutionTimeline from '../shared/execution-timeline.vue';
 import {
   definitionStatusMeta,
   isExecutableKind,
+  isResourceKind,
   NODE_PALETTE,
   nodeSize,
   normalizeNodeKind,
@@ -473,6 +474,18 @@ const paletteGroups = computed(() => [
         'RabbitMqPublish',
         'SubFlow',
         'Throw',
+      ].includes(x.kind),
+    ),
+  },
+  {
+    title: '托管资源',
+    items: NODE_PALETTE.filter((x) =>
+      [
+        'ResourceCreate',
+        'ResourceDelete',
+        'ResourceGet',
+        'ResourceQuery',
+        'ResourceUpdate',
       ].includes(x.kind),
     ),
   },
@@ -1296,7 +1309,9 @@ onBeforeUnmount(() => {
                                         ? 'lucide:radio'
                                         : item.kind === 'SubFlow'
                                           ? 'lucide:boxes'
-                                          : 'lucide:scroll-text'
+                                          : isResourceKind(item.kind)
+                                            ? 'lucide:database'
+                                            : 'lucide:scroll-text'
                     "
                   />
                 </div>
@@ -1780,7 +1795,8 @@ onBeforeUnmount(() => {
                     selected.nodeType !== 'HttpCall' &&
                     selected.nodeType !== 'Throw' &&
                     selected.nodeType !== 'RabbitMqPublish' &&
-                    selected.nodeType !== 'SubFlow'
+                    selected.nodeType !== 'SubFlow' &&
+                    !isResourceKind(selected.nodeType)
                   "
                   label="执行方式"
                 >

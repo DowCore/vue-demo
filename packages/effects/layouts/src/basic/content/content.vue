@@ -7,7 +7,7 @@ import { RouterView } from 'vue-router';
 import { usePreferences } from '@vben/preferences';
 import { getTabKey, storeToRefs, useTabbarStore } from '@vben/stores';
 
-import { transformComponent, useLayoutHook } from '../../hooks';
+import { useLayoutHook, wrapRouteView } from '../../hooks';
 import { IFrameRouterView } from '../../iframe';
 import { RouteCachedPage, RouteCachedView } from '../../route-cached';
 
@@ -52,14 +52,14 @@ const showComponent = (route: RouteLocationNormalizedLoadedGeneric) => {
           :include="getCachedTabs"
         >
           <component
-            :is="transformComponent(Component, route)"
+            :is="wrapRouteView(Component, route)"
             v-if="showComponent(route)"
             v-show="!route.meta.iframeSrc"
             :key="getTabKey(route)"
           />
         </KeepAlive>
         <component
-          :is="Component"
+          :is="wrapRouteView(Component, route)"
           v-else-if="showComponent(route)"
           :key="getTabKey(route)"
         />
@@ -71,14 +71,14 @@ const showComponent = (route: RouteLocationNormalizedLoadedGeneric) => {
           :include="getCachedTabs"
         >
           <component
-            :is="transformComponent(Component, route)"
+            :is="wrapRouteView(Component, route)"
             v-if="showComponent(route)"
             v-show="!route.meta.iframeSrc"
             :key="getTabKey(route)"
           />
         </KeepAlive>
         <component
-          :is="Component"
+          :is="wrapRouteView(Component, route)"
           v-else-if="showComponent(route)"
           :key="getTabKey(route)"
         />

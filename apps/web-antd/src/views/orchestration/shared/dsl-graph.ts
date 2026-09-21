@@ -592,6 +592,70 @@ return {
     ]);
   }
 
+  if (normalized === 'ResourceQuery') {
+    base.refName = 'query';
+    base.inputsJson = serializeBindings([
+      { name: 'resourceCode', from: 'input.resourceCode' },
+      { name: 'page', from: 'input.page' },
+      { name: 'pageSize', from: 'input.pageSize' },
+      { name: 'sorting', from: 'input.sorting' },
+      { name: 'filters', from: 'input.filters' },
+      { name: 'columns', from: 'input.columns' },
+    ]);
+    base.outputsJson = serializeBindings([
+      { name: 'items', type: 'array', from: 'items' },
+      { name: 'total', type: 'number', from: 'total' },
+    ]);
+  }
+
+  if (normalized === 'ResourceGet') {
+    base.refName = 'get';
+    base.inputsJson = serializeBindings([
+      { name: 'resourceCode', from: 'input.resourceCode' },
+      { name: 'id', from: 'input.id' },
+    ]);
+    base.outputsJson = serializeBindings([
+      { name: 'record', type: 'object', from: 'record' },
+    ]);
+  }
+
+  if (normalized === 'ResourceCreate') {
+    base.refName = 'create';
+    base.inputsJson = serializeBindings([
+      { name: 'resourceCode', from: 'input.resourceCode' },
+      { name: 'record', from: 'input.record' },
+    ]);
+    base.outputsJson = serializeBindings([
+      { name: 'id', type: 'string', from: 'id' },
+    ]);
+  }
+
+  if (normalized === 'ResourceUpdate') {
+    base.refName = 'update';
+    base.inputsJson = serializeBindings([
+      { name: 'resourceCode', from: 'input.resourceCode' },
+      { name: 'id', from: 'input.id' },
+      { name: 'concurrencyStamp', from: 'input.concurrencyStamp' },
+      { name: 'record', from: 'input.record' },
+    ]);
+    base.outputsJson = serializeBindings([
+      { name: 'id', type: 'string', from: 'id' },
+      { name: 'concurrencyStamp', type: 'string', from: 'concurrencyStamp' },
+    ]);
+  }
+
+  if (normalized === 'ResourceDelete') {
+    base.refName = 'delete';
+    base.inputsJson = serializeBindings([
+      { name: 'resourceCode', from: 'input.resourceCode' },
+      { name: 'id', from: 'input.id' },
+    ]);
+    base.outputsJson = serializeBindings([
+      { name: 'id', type: 'string', from: 'id' },
+      { name: 'deleted', type: 'boolean', from: 'deleted' },
+    ]);
+  }
+
   if (normalized === 'Throw') {
     base.refName = 'throw1';
     base.failItemsJson = serializeItems([

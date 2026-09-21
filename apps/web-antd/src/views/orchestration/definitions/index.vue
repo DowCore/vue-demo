@@ -361,10 +361,23 @@ onMounted(load);
               </Tag>
             </template>
             <template v-else-if="column.key === 'reusable'">
-              <Tag v-if="(record as FlowDefinition).isReusable" color="cyan">
-                组件
-              </Tag>
-              <span v-else class="text-muted-foreground">—</span>
+              <Space>
+                <Tag v-if="(record as FlowDefinition).isSystem" color="purple">
+                  系统
+                </Tag>
+                <Tag v-if="(record as FlowDefinition).isReusable" color="cyan">
+                  组件
+                </Tag>
+                <span
+                  v-if="
+                    !(record as FlowDefinition).isReusable &&
+                    !(record as FlowDefinition).isSystem
+                  "
+                  class="text-muted-foreground"
+                >
+                  —
+                </span>
+              </Space>
             </template>
             <template v-else-if="column.key === 'version'">
               <span
@@ -392,6 +405,7 @@ onMounted(load);
                   type="code"
                 >
                   <Button
+                    :disabled="!!(record as FlowDefinition).isSystem"
                     size="small"
                     type="link"
                     @click="openDesigner(record as FlowDefinition)"
@@ -425,6 +439,7 @@ onMounted(load);
                   type="code"
                 >
                   <Button
+                    :disabled="!!(record as FlowDefinition).isSystem"
                     size="small"
                     type="link"
                     @click="publish(record as FlowDefinition)"
@@ -437,6 +452,7 @@ onMounted(load);
                   type="code"
                 >
                   <Button
+                    :disabled="!!(record as FlowDefinition).isSystem"
                     danger
                     size="small"
                     type="link"

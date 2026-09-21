@@ -13,6 +13,7 @@ export interface FlowDefinition {
   dslJson?: string;
   publishedVersion?: number;
   isReusable?: boolean;
+  isSystem?: boolean;
   creationTime?: string;
   lastModificationTime?: string;
 }
@@ -326,6 +327,26 @@ export function deleteDataSourceApi(id: string) {
   return requestClient.delete(`/api/orchestration/data-sources/${id}`);
 }
 
+export function testDataSourceApi(data: {
+  id?: string;
+  provider: string;
+  connectionString?: string;
+}) {
+  return requestClient.post<{
+    success: boolean;
+    elapsedMs: number;
+    message?: string;
+  }>('/api/orchestration/data-sources/test', data);
+}
+
+export function testSavedDataSourceApi(id: string) {
+  return requestClient.post<{
+    success: boolean;
+    elapsedMs: number;
+    message?: string;
+  }>(`/api/orchestration/data-sources/${id}/test`);
+}
+
 /* ---- Message sources / triggers / schedules ---- */
 
 export interface MessageSourceItem {
@@ -544,6 +565,490 @@ export function runFlowScheduleNowApi(id: string) {
     instanceId: string;
     error?: string;
   }>(`/api/orchestration/schedules/${id}/run-now`);
+}
+
+/* ---- Managed tables / app resources ---- */
+
+export type TableOrigin = 'convention' | 'imported' | 'managed' | 'user';
+export type TableSyncState =
+  | 'conflict'
+  | 'draft'
+  | 'inSync'
+  | 'localAhead'
+  | 'remoteAhead';
+
+export interface TableColumn {
+  name: string;
+  displayName: string;
+  platformType: string;
+  length?: number;
+  precision?: number;
+  scale?: number;
+  nullable: boolean;
+  default?: string;
+  unique: boolean;
+  comment?: string;
+  origin: string;
+  appliedName?: string;
+}
+
+export interface TableIndexColumn {
+  name: string;
+  descending: boolean;
+}
+
+export interface TableIndex {
+  name: string;
+  unique: boolean;
+  isPrimary: boolean;
+  origin: string;
+  columns: TableIndexColumn[];
+}
+
+export interface TableDefinition {
+  id: string;
+  dataSourceCode: string;
+  tableName: string;
+  displayName: string;
+  origin: string;
+  syncState: string | TableSyncState;
+  lastAppliedAt?: string;
+  comment?: string;
+  columns: TableColumn[];
+  indexes: TableIndex[];
+  creationTime?: string;
+}
+
+export interface DdlPreviewItem {
+  kind: string;
+  sql: string;
+  destructive: boolean;
+}
+
+export interface FilterItemDef {
+  no: number;
+  left: string;
+  op: string;
+  valueSource?: string;
+  literal?: string;
+  systemKey?: string;
+  exposed?: boolean;
+}
+
+export interface FilterNode {
+  kind?: 'group' | 'rule';
+  op?: string;
+  left?: string;
+  right?: unknown;
+  children?: FilterNode[];
+}
+
+export interface SearchFormFieldDef {
+  key: string;
+  field: string;
+  title: string;
+  op: string;
+  control: string;
+  span?: number;
+  placeholder?: string;
+  orGroup?: string;
+}
+
+export interface SearchFormDef {
+  columns?: number;
+  fields: SearchFormFieldDef[];
+}
+
+export interface NamedFilterPreset {
+  key: string;
+  label: string;
+  filter: FilterNode;
+}
+
+export interface FilterDef {
+  items: FilterItemDef[];
+  combine?: string;
+  dataScope?: FilterNode;
+  searchForm?: SearchFormDef;
+  advancedFilter?: boolean;
+  presets?: NamedFilterPreset[];
+}
+
+export interface ColumnStyleRule {
+  op?: string;
+  value?: string;
+  tone?: string;
+  target?: string;
+}
+
+export interface ListColumnDef {
+  field: string;
+  title: string;
+  width?: number;
+  sortable?: boolean;
+  visible?: boolean;
+  formatPreset?: string;
+  align?: string;
+  render?: string;
+  dictMap?: Record<string, string>;
+  styleRules?: ColumnStyleRule[];
+  summaryFn?: string;
+  summaryScope?: string;
+}
+
+export interface ActionDef {
+  key: string;
+  label: string;
+  position: string;
+  scene?: string;
+  scope?: string;
+  kind: string;
+  flowKey?: string;
+  open?: string;
+  formMode?: string;
+  fieldsMode?: string;
+  fields?: string[];
+  confirm?: boolean;
+  confirmText?: string;
+  batchLimit?: number;
+}
+
+export interface ListViewDef {
+  columns: ListColumnDef[];
+  defaultSorting?: string;
+  pageSize?: number;
+  actions: ActionDef[];
+}
+
+export interface FormFieldDef {
+  field: string;
+  title: string;
+  control: string;
+  visibleOnCreate?: boolean;
+  visibleOnUpdate?: boolean;
+  visibleOnDetail?: boolean;
+  readonlyOnCreate?: boolean;
+  readonlyOnUpdate?: boolean;
+  requiredOnCreate?: boolean;
+  requiredOnUpdate?: boolean;
+}
+
+export interface FormDef {
+  fields: FormFieldDef[];
+}
+
+export interface AppResource {
+  id: string;
+  code: string;
+  name: string;
+  dataSourceCode: string;
+  tableName: string;
+  titleField: string;
+  status: number;
+  queryFlowKey: string;
+  getFlowKey: string;
+  createFlowKey: string;
+  updateFlowKey: string;
+  deleteFlowKey: string;
+  filter: FilterDef;
+  listView: ListViewDef;
+  form: FormDef;
+  creationTime?: string;
+}
+
+export interface ResourceInvokeResult {
+  success: boolean;
+  instanceId: string;
+  data?: unknown;
+  error?: string;
+}
+
+export interface RuntimeFilter {
+  items: Array<{
+    no: number;
+    left: string;
+    op: string;
+    right?: boolean | number | string;
+  }>;
+  combine?: string;
+}
+
+export interface ReportDefinition {
+  id: string;
+  code: string;
+  name: string;
+  kind: string;
+  resourceCode?: string;
+  queryFlowKey: string;
+  status: number;
+  dataScope?: FilterNode;
+  searchForm?: SearchFormDef;
+  advancedFilter?: boolean;
+  presets?: NamedFilterPreset[];
+  kpis?: Array<{ title: string; field: string; fn: string }>;
+  columns: ListColumnDef[];
+  actions: ActionDef[];
+  defaultSorting?: string;
+  pageSize?: number;
+  selectionEnabled?: boolean;
+  description?: string;
+  creationTime?: string;
+}
+
+export function getTableDefinitionsApi(params?: {
+  dataSourceCode?: string;
+  filter?: string;
+  maxResultCount?: number;
+  skipCount?: number;
+}) {
+  return requestClient.get<OrchestrationPagedResult<TableDefinition>>(
+    '/api/orchestration/tables',
+    { params },
+  );
+}
+
+export function getTableDefinitionApi(id: string) {
+  return requestClient.get<TableDefinition>(`/api/orchestration/tables/${id}`);
+}
+
+export function createTableDefinitionApi(data: {
+  dataSourceCode: string;
+  tableName: string;
+  displayName: string;
+}) {
+  return requestClient.post<TableDefinition>('/api/orchestration/tables', data);
+}
+
+export function updateTableDefinitionApi(
+  id: string,
+  data: {
+    displayName: string;
+    comment?: string;
+    columns: TableColumn[];
+    indexes: TableIndex[];
+  },
+) {
+  return requestClient.put<TableDefinition>(
+    `/api/orchestration/tables/${id}`,
+    data,
+  );
+}
+
+export function deleteTableDefinitionApi(id: string) {
+  return requestClient.delete(`/api/orchestration/tables/${id}`);
+}
+
+export function previewTableDdlApi(id: string) {
+  return requestClient.get<{ items: DdlPreviewItem[] }>(
+    `/api/orchestration/tables/${id}/preview`,
+  );
+}
+
+export function applyTableDdlApi(id: string) {
+  return requestClient.post<TableDefinition>(
+    `/api/orchestration/tables/${id}/apply`,
+  );
+}
+
+export function createAppResourceFromTableApi(
+  tableId: string,
+  data: { code: string; name: string },
+) {
+  return requestClient.post<AppResource>(
+    `/api/orchestration/tables/${tableId}/resources`,
+    data,
+  );
+}
+
+export function getAppResourcesApi(params?: {
+  filter?: string;
+  status?: number;
+  maxResultCount?: number;
+  skipCount?: number;
+}) {
+  return requestClient.get<OrchestrationPagedResult<AppResource>>(
+    '/api/orchestration/resources',
+    { params },
+  );
+}
+
+export function getAppResourceApi(id: string) {
+  return requestClient.get<AppResource>(`/api/orchestration/resources/${id}`);
+}
+
+export function getPublishedAppResourceApi(code: string) {
+  return requestClient.get<AppResource>(
+    `/api/orchestration/resources/published/${encodeURIComponent(code)}`,
+  );
+}
+
+export function updateAppResourceApi(
+  id: string,
+  data: {
+    name: string;
+    titleField?: string;
+    filter?: FilterDef;
+    listView?: ListViewDef;
+    form?: FormDef;
+    queryFlowKey?: string;
+    getFlowKey?: string;
+    createFlowKey?: string;
+    updateFlowKey?: string;
+    deleteFlowKey?: string;
+  },
+) {
+  return requestClient.put<AppResource>(
+    `/api/orchestration/resources/${id}`,
+    data,
+  );
+}
+
+export function deleteAppResourceApi(id: string) {
+  return requestClient.delete(`/api/orchestration/resources/${id}`);
+}
+
+export function publishAppResourceApi(id: string) {
+  return requestClient.post<AppResource>(
+    `/api/orchestration/resources/${id}/publish`,
+  );
+}
+
+export function queryAppResourceApi(
+  code: string,
+  data: {
+    page?: number;
+    pageSize?: number;
+    sorting?: string;
+    filter?: FilterNode;
+    filters?: RuntimeFilter;
+    summaryFields?: Array<{ field: string; fn: string }>;
+  },
+) {
+  return requestClient.post<ResourceInvokeResult>(
+    `/api/orchestration/resources/${encodeURIComponent(code)}/query`,
+    data,
+  );
+}
+
+export function getAppResourceRecordApi(code: string, id: string) {
+  return requestClient.post<ResourceInvokeResult>(
+    `/api/orchestration/resources/${encodeURIComponent(code)}/get`,
+    { id },
+  );
+}
+
+export function createAppResourceRecordApi(
+  code: string,
+  data: { record: Record<string, unknown> },
+) {
+  return requestClient.post<ResourceInvokeResult>(
+    `/api/orchestration/resources/${encodeURIComponent(code)}/create`,
+    data,
+  );
+}
+
+export function updateAppResourceRecordApi(
+  code: string,
+  data: {
+    id: string;
+    concurrencyStamp?: string;
+    record: Record<string, unknown>;
+  },
+) {
+  return requestClient.post<ResourceInvokeResult>(
+    `/api/orchestration/resources/${encodeURIComponent(code)}/update`,
+    data,
+  );
+}
+
+export function deleteAppResourceRecordApi(code: string, id: string) {
+  return requestClient.post<ResourceInvokeResult>(
+    `/api/orchestration/resources/${encodeURIComponent(code)}/delete`,
+    { id },
+  );
+}
+
+export function getReportsApi(params?: {
+  filter?: string;
+  status?: number;
+  maxResultCount?: number;
+  skipCount?: number;
+}) {
+  return requestClient.get<OrchestrationPagedResult<ReportDefinition>>(
+    '/api/orchestration/reports',
+    { params },
+  );
+}
+
+export function getReportApi(id: string) {
+  return requestClient.get<ReportDefinition>(
+    `/api/orchestration/reports/${id}`,
+  );
+}
+
+export function getPublishedReportApi(code: string) {
+  return requestClient.get<ReportDefinition>(
+    `/api/orchestration/reports/published/${encodeURIComponent(code)}`,
+  );
+}
+
+export function createReportApi(data: {
+  code: string;
+  name: string;
+  kind?: string;
+  resourceCode?: string;
+}) {
+  return requestClient.post<ReportDefinition>(
+    '/api/orchestration/reports',
+    data,
+  );
+}
+
+export function createReportFromResourceApi(data: {
+  resourceCode: string;
+  code: string;
+  name: string;
+}) {
+  return requestClient.post<ReportDefinition>(
+    '/api/orchestration/reports/from-resource',
+    data,
+  );
+}
+
+export function updateReportApi(
+  id: string,
+  data: Partial<ReportDefinition> & { name: string },
+) {
+  return requestClient.put<ReportDefinition>(
+    `/api/orchestration/reports/${id}`,
+    data,
+  );
+}
+
+export function deleteReportApi(id: string) {
+  return requestClient.delete(`/api/orchestration/reports/${id}`);
+}
+
+export function publishReportApi(id: string) {
+  return requestClient.post<ReportDefinition>(
+    `/api/orchestration/reports/${id}/publish`,
+  );
+}
+
+export function queryReportApi(
+  code: string,
+  data: {
+    page?: number;
+    pageSize?: number;
+    sorting?: string;
+    filter?: FilterNode;
+    summaryFields?: Array<{ field: string; fn: string }>;
+  },
+) {
+  return requestClient.post<ResourceInvokeResult>(
+    `/api/orchestration/reports/${encodeURIComponent(code)}/query`,
+    data,
+  );
 }
 
 export function runLogicApi(flowKey: string, body: Record<string, unknown>) {

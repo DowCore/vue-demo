@@ -5,6 +5,9 @@ export default defineConfig(async () => {
     application: {},
     vite: {
       server: {
+        hmr: {
+          overlay: false,
+        },
         proxy: {
           '/connect': {
             changeOrigin: true,

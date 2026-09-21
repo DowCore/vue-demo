@@ -35,6 +35,11 @@ export type FlowExecutableKind =
   | 'Log'
   | 'Mask'
   | 'RabbitMqPublish'
+  | 'ResourceCreate'
+  | 'ResourceDelete'
+  | 'ResourceGet'
+  | 'ResourceQuery'
+  | 'ResourceUpdate'
   | 'SubFlow'
   | 'Throw';
 
@@ -51,12 +56,27 @@ export const EXECUTABLE_NODE_KINDS: FlowExecutableKind[] = [
   'Throw',
   'Mask',
   'RabbitMqPublish',
+  'ResourceQuery',
+  'ResourceGet',
+  'ResourceCreate',
+  'ResourceUpdate',
+  'ResourceDelete',
   'SubFlow',
 ];
 
 export function isExecutableKind(kind: string): boolean {
   const n = normalizeNodeKind(kind);
   return (EXECUTABLE_NODE_KINDS as string[]).includes(n);
+}
+
+export function isResourceKind(kind: string): boolean {
+  return [
+    'ResourceCreate',
+    'ResourceDelete',
+    'ResourceGet',
+    'ResourceQuery',
+    'ResourceUpdate',
+  ].includes(normalizeNodeKind(kind));
 }
 
 /** SetVariable → Assign */
@@ -178,6 +198,56 @@ export const NODE_PALETTE: NodePaletteItem[] = [
     icon: 'SF',
     color: '#08979c',
     bg: '#e6fffb',
+  },
+  {
+    kind: 'ResourceQuery',
+    label: '资源查询',
+    desc: '托管表分页列表',
+    shape: 'flow-resource-query',
+    geometry: 'rect',
+    icon: 'Q',
+    color: '#0958d9',
+    bg: '#e6f4ff',
+  },
+  {
+    kind: 'ResourceGet',
+    label: '资源详情',
+    desc: '按 Id 取一行',
+    shape: 'flow-resource-get',
+    geometry: 'rect',
+    icon: 'G',
+    color: '#0958d9',
+    bg: '#e6f4ff',
+  },
+  {
+    kind: 'ResourceCreate',
+    label: '资源新增',
+    desc: 'INSERT 托管表',
+    shape: 'flow-resource-create',
+    geometry: 'rect',
+    icon: '+',
+    color: '#389e0d',
+    bg: '#f6ffed',
+  },
+  {
+    kind: 'ResourceUpdate',
+    label: '资源更新',
+    desc: 'UPDATE 托管表',
+    shape: 'flow-resource-update',
+    geometry: 'rect',
+    icon: 'U',
+    color: '#d46b08',
+    bg: '#fff7e6',
+  },
+  {
+    kind: 'ResourceDelete',
+    label: '资源删除',
+    desc: '软删 / DELETE',
+    shape: 'flow-resource-delete',
+    geometry: 'rect',
+    icon: 'X',
+    color: '#cf1322',
+    bg: '#fff1f0',
   },
   {
     kind: 'End',
