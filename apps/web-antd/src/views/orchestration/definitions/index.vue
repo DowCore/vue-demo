@@ -17,6 +17,7 @@ import {
   Modal,
   Segmented,
   Space,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -33,6 +34,7 @@ import {
 
 import { createDefaultGraph, parseDsl } from '../shared/dsl-graph';
 import { definitionStatusMeta, formatDateTime } from '../shared/flow-meta';
+import { buildSampleInputJson } from '../shared/schema-utils';
 
 defineOptions({ name: 'OrchestrationDefinitions' });
 
@@ -51,6 +53,7 @@ const createForm = reactive({
   name: '',
   code: '',
   category: '',
+  isReusable: false,
 });
 const runForm = reactive({
   definitionId: '',
@@ -88,6 +91,7 @@ function openCreate() {
   createForm.name = '';
   createForm.code = `flow_${Date.now().toString(36)}`;
   createForm.category = '默认';
+  createForm.isReusable = false;
   createOpen.value = true;
 }
 
@@ -105,6 +109,7 @@ async function saveCreate() {
       name: createForm.name.trim(),
       code: createForm.code.trim(),
       category: createForm.category.trim() || undefined,
+      isReusable: createForm.isReusable,
       dslJson: JSON.stringify(dsl, null, 2),
       graphJson: JSON.stringify(graph),
     });
@@ -135,7 +140,21 @@ async function publish(record: FlowDefinition) {
 function openRun(record: FlowDefinition) {
   runForm.definitionId = record.id;
   runForm.definitionName = record.name;
-  runForm.variablesJson = '{\n  "amount": 1500\n}';
+  try {
+    const dsl = parseDsl(record.dslJson);
+    const sample = buildSampleInputJson(dsl.inputs || []);
+    // 演示流常用样例：amount 给一个触发高风险分支的值
+    if (sample.amount === 0 || sample.amount === undefined) {
+      sample.amount = 1500;
+    }
+    runForm.variablesJson = JSON.stringify(
+      Object.keys(sample).length > 0 ? sample : { amount: 1500 },
+      null,
+      2,
+    );
+  } catch {
+    runForm.variablesJson = '{\n  "amount": 1500\n}';
+  }
   runOpen.value = true;
 }
 
@@ -178,6 +197,7 @@ function onSearch() {
 const columns = [
   { title: '流程', key: 'flow', ellipsis: true },
   { title: '状态', key: 'status', width: 110 },
+  { title: '组件', key: 'reusable', width: 80 },
   { title: '版本', key: 'version', width: 90 },
   { title: '更新时间', key: 'time', width: 180 },
   { title: '操作', key: 'actions', width: 220, fixed: 'right' as const },
@@ -340,6 +360,12 @@ onMounted(load);
                 }}
               </Tag>
             </template>
+            <template v-else-if="column.key === 'reusable'">
+              <Tag v-if="(record as FlowDefinition).isReusable" color="cyan">
+                组件
+              </Tag>
+              <span v-else class="text-muted-foreground">—</span>
+            </template>
             <template v-else-if="column.key === 'version'">
               <span
                 v-if="(record as FlowDefinition).publishedVersion"
@@ -451,6 +477,12 @@ onMounted(load);
         <Form.Item label="分类">
           <Input v-model:value="createForm.category" placeholder="可选" />
         </Form.Item>
+        <Form.Item label="可复用逻辑组件">
+          <Switch v-model:checked="createForm.isReusable" />
+          <div class="text-muted-foreground mt-1 text-xs">
+            开启后可被其它流程以 SubFlow 节点调用（需发布）。
+          </div>
+        </Form.Item>
       </Form>
     </Modal>
 
@@ -464,7 +496,9 @@ onMounted(load);
       @ok="saveRun"
     >
       <div class="text-muted-foreground mb-3 text-sm">
-        填写初始变量 JSON，将按已发布版本同步执行。
+        填写初始变量 JSON，将按已发布版本同步执行。须包含流程「请求参数」里所有
+        <code>required</code>
+        字段（已按当前草稿 DSL 预填样例，可改）。
       </div>
       <Input.TextArea
         v-model:value="runForm.variablesJson"

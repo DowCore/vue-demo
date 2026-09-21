@@ -4,6 +4,7 @@ import type { FlowInstance } from '#/api/saas/orchestration';
 import { computed, onActivated, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
+import { AccessControl } from '@vben/access';
 import { Page } from '@vben/common-ui';
 import { IconifyIcon } from '@vben/icons';
 
@@ -14,6 +15,8 @@ import {
   Drawer,
   Empty,
   Input,
+  message,
+  Modal,
   Segmented,
   Space,
   Table,
@@ -21,6 +24,8 @@ import {
 } from 'ant-design-vue';
 
 import {
+  deleteFlowInstanceApi,
+  deleteManyFlowInstancesApi,
   getFlowInstanceApi,
   getFlowInstancesApi,
 } from '#/api/saas/orchestration';
@@ -33,11 +38,13 @@ defineOptions({ name: 'OrchestrationInstances' });
 const route = useRoute();
 const router = useRouter();
 const loading = ref(false);
+const deleting = ref(false);
 const items = ref<FlowInstance[]>([]);
 const total = ref(0);
 const page = reactive({ current: 1, pageSize: 10 });
 const status = ref<'all' | number>('all');
 const definitionId = ref('');
+const selectedRowKeys = ref<string[]>([]);
 
 const detailOpen = ref(false);
 const detail = ref<FlowInstance | null>(null);
@@ -53,6 +60,13 @@ const successRate = computed(() => {
   return Math.round((ok / items.value.length) * 100);
 });
 
+const rowSelection = computed(() => ({
+  selectedRowKeys: selectedRowKeys.value,
+  onChange: (keys: (number | string)[]) => {
+    selectedRowKeys.value = keys.map(String);
+  },
+}));
+
 async function load() {
   loading.value = true;
   try {
@@ -64,13 +78,17 @@ async function load() {
     });
     items.value = result.items ?? [];
     total.value = result.totalCount ?? 0;
+    // 翻页后去掉不在本页的勾选
+    const pageIds = new Set(items.value.map((x) => x.id));
+    selectedRowKeys.value = selectedRowKeys.value.filter((id) =>
+      pageIds.has(id),
+    );
   } finally {
     loading.value = false;
   }
 }
 
 async function openDetail(record: FlowInstance) {
-  // 列表里已有完整节点日志时直接展示，避免多余请求
   detail.value = record;
   detailOpen.value = true;
   if (record.nodes?.length) {
@@ -101,7 +119,6 @@ async function openByQuery() {
   } catch {
     detailOpen.value = false;
     detail.value = null;
-    // 清掉无效参数，避免 keep-alive 下反复请求
     const nextQuery = { ...route.query };
     delete nextQuery.instanceId;
     delete nextQuery.id;
@@ -113,7 +130,61 @@ async function openByQuery() {
 
 function onSearch() {
   page.current = 1;
+  selectedRowKeys.value = [];
   load();
+}
+
+function removeOne(record: FlowInstance) {
+  Modal.confirm({
+    title: '删除执行实例',
+    content: `确认删除「${record.definitionName}」的这条执行记录？不可恢复。`,
+    okType: 'danger',
+    onOk: async () => {
+      deleting.value = true;
+      try {
+        await deleteFlowInstanceApi(record.id);
+        message.success('已删除');
+        if (detail.value?.id === record.id) {
+          detailOpen.value = false;
+          detail.value = null;
+        }
+        selectedRowKeys.value = selectedRowKeys.value.filter(
+          (id) => id !== record.id,
+        );
+        await load();
+      } finally {
+        deleting.value = false;
+      }
+    },
+  });
+}
+
+function removeSelected() {
+  const ids = [...selectedRowKeys.value];
+  if (ids.length === 0) {
+    message.warning('请先勾选要删除的实例');
+    return;
+  }
+  Modal.confirm({
+    title: '批量删除',
+    content: `确认删除选中的 ${ids.length} 条执行记录？不可恢复。`,
+    okType: 'danger',
+    onOk: async () => {
+      deleting.value = true;
+      try {
+        await deleteManyFlowInstancesApi(ids);
+        message.success(`已删除 ${ids.length} 条`);
+        selectedRowKeys.value = [];
+        if (detail.value && ids.includes(detail.value.id)) {
+          detailOpen.value = false;
+          detail.value = null;
+        }
+        await load();
+      } finally {
+        deleting.value = false;
+      }
+    },
+  });
 }
 
 const columns = [
@@ -122,7 +193,7 @@ const columns = [
   { title: '版本', key: 'version', width: 80 },
   { title: '模式', key: 'mode', width: 100 },
   { title: '时间', key: 'time', width: 180 },
-  { title: '操作', key: 'actions', width: 100, fixed: 'right' as const },
+  { title: '操作', key: 'actions', width: 140, fixed: 'right' as const },
 ];
 
 watch(
@@ -149,7 +220,7 @@ onActivated(async () => {
 <template>
   <Page
     auto-content-height
-    description="查看流程执行记录与节点级日志，支持按定义与状态筛选"
+    description="查看流程执行记录与节点级日志，支持按定义与状态筛选；可单条或批量清理历史实例"
     title="执行实例"
   >
     <div class="flex h-full flex-col gap-4 p-4">
@@ -224,6 +295,22 @@ onActivated(async () => {
             @change="onSearch"
           />
           <Button type="primary" @click="onSearch">查询</Button>
+          <AccessControl
+            :codes="['Orchestration.Instances.Delete']"
+            type="code"
+          >
+            <Button
+              :disabled="selectedRowKeys.length === 0"
+              :loading="deleting"
+              danger
+              @click="removeSelected"
+            >
+              删除所选
+              <template v-if="selectedRowKeys.length">
+                ({{ selectedRowKeys.length }})
+              </template>
+            </Button>
+          </AccessControl>
         </div>
 
         <Table
@@ -242,7 +329,8 @@ onActivated(async () => {
               load();
             },
           }"
-          :scroll="{ x: 860 }"
+          :row-selection="rowSelection"
+          :scroll="{ x: 900 }"
           row-key="id"
           size="middle"
         >
@@ -275,13 +363,28 @@ onActivated(async () => {
               </span>
             </template>
             <template v-else-if="column.key === 'actions'">
-              <Button
-                size="small"
-                type="link"
-                @click="openDetail(record as FlowInstance)"
-              >
-                详情
-              </Button>
+              <Space>
+                <Button
+                  size="small"
+                  type="link"
+                  @click="openDetail(record as FlowInstance)"
+                >
+                  详情
+                </Button>
+                <AccessControl
+                  :codes="['Orchestration.Instances.Delete']"
+                  type="code"
+                >
+                  <Button
+                    danger
+                    size="small"
+                    type="link"
+                    @click="removeOne(record as FlowInstance)"
+                  >
+                    删除
+                  </Button>
+                </AccessControl>
+              </Space>
             </template>
           </template>
         </Table>
@@ -332,6 +435,14 @@ onActivated(async () => {
 
         <div class="mb-3 text-sm font-medium">节点执行轨迹</div>
         <ExecutionTimeline :error="detail.error" :nodes="detail.nodes" />
+
+        <AccessControl :codes="['Orchestration.Instances.Delete']" type="code">
+          <div class="mt-6">
+            <Button danger :loading="deleting" @click="removeOne(detail)">
+              删除此实例
+            </Button>
+          </div>
+        </AccessControl>
       </template>
     </Drawer>
   </Page>

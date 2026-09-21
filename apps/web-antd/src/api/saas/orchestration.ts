@@ -12,8 +12,28 @@ export interface FlowDefinition {
   graphJson?: string;
   dslJson?: string;
   publishedVersion?: number;
+  isReusable?: boolean;
   creationTime?: string;
   lastModificationTime?: string;
+}
+
+export interface ReusableFlowLookup {
+  id: string;
+  code: string;
+  name: string;
+  category?: string;
+  publishedVersion: number;
+}
+
+export interface FlowUsage {
+  id: string;
+  callerDefinitionId: string;
+  callerCode: string;
+  callerName: string;
+  calleeFlowKey: string;
+  nodeId?: string;
+  nodeRef?: string;
+  creationTime?: string;
 }
 
 export interface FlowVersion {
@@ -44,6 +64,7 @@ export interface FlowInstance {
   variablesJson?: string;
   error?: string;
   isDryRun: boolean;
+  triggerSource?: string;
   nodes: NodeExecution[];
   creationTime?: string;
 }
@@ -56,12 +77,33 @@ export interface OrchestrationPagedResult<T> {
 export function getFlowDefinitionsApi(params?: {
   filter?: string;
   status?: FlowDefinitionStatus;
+  isReusable?: boolean;
   maxResultCount?: number;
   skipCount?: number;
 }) {
   return requestClient.get<OrchestrationPagedResult<FlowDefinition>>(
     '/api/orchestration/definitions',
     { params },
+  );
+}
+
+export function getReusableFlowLookupApi(filter?: string) {
+  return requestClient.get<{ items: ReusableFlowLookup[] }>(
+    '/api/orchestration/definitions/reusable-lookup',
+    { params: { filter } },
+  );
+}
+
+export function getFlowUsagesByCalleeApi(flowKey: string) {
+  return requestClient.get<{ items: FlowUsage[] }>(
+    '/api/orchestration/definitions/usages/by-callee',
+    { params: { flowKey } },
+  );
+}
+
+export function getFlowUsagesByCallerApi(definitionId: string) {
+  return requestClient.get<{ items: FlowUsage[] }>(
+    `/api/orchestration/definitions/${definitionId}/usages`,
   );
 }
 
@@ -77,6 +119,7 @@ export function createFlowDefinitionApi(data: {
   category?: string;
   graphJson?: string;
   dslJson?: string;
+  isReusable?: boolean;
 }) {
   return requestClient.post<FlowDefinition>(
     '/api/orchestration/definitions',
@@ -91,6 +134,7 @@ export function updateFlowDefinitionApi(
     category?: string;
     graphJson?: string;
     dslJson?: string;
+    isReusable?: boolean;
   },
 ) {
   return requestClient.put<FlowDefinition>(
@@ -153,6 +197,16 @@ export function dryRunFlowInstanceApi(data: {
 
 export function cancelFlowInstanceApi(id: string) {
   return requestClient.post(`/api/orchestration/instances/${id}/cancel`);
+}
+
+export function deleteFlowInstanceApi(id: string) {
+  return requestClient.delete(`/api/orchestration/instances/${id}`);
+}
+
+export function deleteManyFlowInstancesApi(ids: string[]) {
+  return requestClient.post('/api/orchestration/instances/delete-many', {
+    ids,
+  });
 }
 
 export function getSystemParametersApi() {
@@ -270,6 +324,226 @@ export function updateDataSourceApi(
 
 export function deleteDataSourceApi(id: string) {
   return requestClient.delete(`/api/orchestration/data-sources/${id}`);
+}
+
+/* ---- Message sources / triggers / schedules ---- */
+
+export interface MessageSourceItem {
+  id: string;
+  code: string;
+  name: string;
+  provider: string;
+  isEnabled: boolean;
+  description?: string;
+  hasConnectionString: boolean;
+  connectionStringHint?: string;
+  creationTime?: string;
+}
+
+export interface MessageSourceProviderOption {
+  provider: string;
+  displayName: string;
+  connectionHint: string;
+  consumeSupported: boolean;
+}
+
+export interface FlowTriggerItem {
+  id: string;
+  code: string;
+  name: string;
+  triggerType: number;
+  flowKey: string;
+  messageSourceCode: string;
+  queue: string;
+  exchange?: string;
+  exchangeType?: string;
+  routingKey?: string;
+  isEnabled: boolean;
+  description?: string;
+  creationTime?: string;
+}
+
+export interface FlowScheduleItem {
+  id: string;
+  code: string;
+  name: string;
+  flowKey: string;
+  cron: string;
+  timeZone: string;
+  variablesJson?: string;
+  isEnabled: boolean;
+  description?: string;
+  lastFiredAt?: string;
+  nextFireAt?: string;
+  creationTime?: string;
+}
+
+export function getMessageSourceProvidersApi() {
+  return requestClient.get<{ items: MessageSourceProviderOption[] }>(
+    '/api/orchestration/message-sources/providers',
+  );
+}
+
+export function getMessageSourceLookupApi() {
+  return requestClient.get<{
+    items: Array<{ code: string; name: string; provider: string }>;
+  }>('/api/orchestration/message-sources/lookup');
+}
+
+export function getMessageSourcesApi(params?: {
+  filter?: string;
+  enabledOnly?: boolean;
+  maxResultCount?: number;
+  skipCount?: number;
+}) {
+  return requestClient.get<OrchestrationPagedResult<MessageSourceItem>>(
+    '/api/orchestration/message-sources',
+    { params },
+  );
+}
+
+export function createMessageSourceApi(data: {
+  code: string;
+  name: string;
+  provider: string;
+  connectionString?: string;
+  description?: string;
+}) {
+  return requestClient.post<MessageSourceItem>(
+    '/api/orchestration/message-sources',
+    data,
+  );
+}
+
+export function updateMessageSourceApi(
+  id: string,
+  data: {
+    name: string;
+    provider: string;
+    connectionString?: string;
+    clearConnectionString?: boolean;
+    isEnabled: boolean;
+    description?: string;
+  },
+) {
+  return requestClient.put<MessageSourceItem>(
+    `/api/orchestration/message-sources/${id}`,
+    data,
+  );
+}
+
+export function deleteMessageSourceApi(id: string) {
+  return requestClient.delete(`/api/orchestration/message-sources/${id}`);
+}
+
+export function getFlowTriggersApi(params?: {
+  filter?: string;
+  enabledOnly?: boolean;
+  maxResultCount?: number;
+  skipCount?: number;
+}) {
+  return requestClient.get<OrchestrationPagedResult<FlowTriggerItem>>(
+    '/api/orchestration/triggers',
+    { params },
+  );
+}
+
+export function createFlowTriggerApi(data: {
+  code: string;
+  name: string;
+  flowKey: string;
+  messageSourceCode: string;
+  queue: string;
+  exchange?: string;
+  exchangeType?: string;
+  routingKey?: string;
+  description?: string;
+}) {
+  return requestClient.post<FlowTriggerItem>(
+    '/api/orchestration/triggers',
+    data,
+  );
+}
+
+export function updateFlowTriggerApi(
+  id: string,
+  data: {
+    name: string;
+    flowKey: string;
+    messageSourceCode: string;
+    queue: string;
+    exchange?: string;
+    exchangeType?: string;
+    routingKey?: string;
+    isEnabled: boolean;
+    description?: string;
+  },
+) {
+  return requestClient.put<FlowTriggerItem>(
+    `/api/orchestration/triggers/${id}`,
+    data,
+  );
+}
+
+export function deleteFlowTriggerApi(id: string) {
+  return requestClient.delete(`/api/orchestration/triggers/${id}`);
+}
+
+export function getFlowSchedulesApi(params?: {
+  filter?: string;
+  enabledOnly?: boolean;
+  maxResultCount?: number;
+  skipCount?: number;
+}) {
+  return requestClient.get<OrchestrationPagedResult<FlowScheduleItem>>(
+    '/api/orchestration/schedules',
+    { params },
+  );
+}
+
+export function createFlowScheduleApi(data: {
+  code: string;
+  name: string;
+  flowKey: string;
+  cron: string;
+  timeZone?: string;
+  variablesJson?: string;
+  description?: string;
+}) {
+  return requestClient.post<FlowScheduleItem>(
+    '/api/orchestration/schedules',
+    data,
+  );
+}
+
+export function updateFlowScheduleApi(
+  id: string,
+  data: {
+    name: string;
+    flowKey: string;
+    cron: string;
+    timeZone?: string;
+    variablesJson?: string;
+    isEnabled: boolean;
+    description?: string;
+  },
+) {
+  return requestClient.put<FlowScheduleItem>(
+    `/api/orchestration/schedules/${id}`,
+    data,
+  );
+}
+
+export function deleteFlowScheduleApi(id: string) {
+  return requestClient.delete(`/api/orchestration/schedules/${id}`);
+}
+
+export function runFlowScheduleNowApi(id: string) {
+  return requestClient.post<{
+    success: boolean;
+    instanceId: string;
+    error?: string;
+  }>(`/api/orchestration/schedules/${id}/run-now`);
 }
 
 export function runLogicApi(flowKey: string, body: Record<string, unknown>) {

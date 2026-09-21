@@ -35,6 +35,7 @@ export type FlowExecutableKind =
   | 'Log'
   | 'Mask'
   | 'RabbitMqPublish'
+  | 'SubFlow'
   | 'Throw';
 
 export type FlowNodeKind =
@@ -50,6 +51,7 @@ export const EXECUTABLE_NODE_KINDS: FlowExecutableKind[] = [
   'Throw',
   'Mask',
   'RabbitMqPublish',
+  'SubFlow',
 ];
 
 export function isExecutableKind(kind: string): boolean {
@@ -168,6 +170,16 @@ export const NODE_PALETTE: NodePaletteItem[] = [
     bg: '#fffbe6',
   },
   {
+    kind: 'SubFlow',
+    label: '逻辑组件',
+    desc: '调用已发布可复用流程',
+    shape: 'flow-subflow',
+    geometry: 'rect',
+    icon: 'SF',
+    color: '#08979c',
+    bg: '#e6fffb',
+  },
+  {
     kind: 'End',
     label: '结束',
     desc: '最终 API 出参',
@@ -202,9 +214,24 @@ export function nodeSize(kind: string) {
   return { width: 168, height: 64 };
 }
 
+/** 一般审计时间（创建/更新）：按浏览器默认解析，勿强行补 Z */
 export function formatDateTime(value?: Date | null | string) {
   if (!value) return '—';
   const d = typeof value === 'string' ? new Date(value) : value;
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('zh-CN', { hour12: false });
+}
+
+/**
+ * 明确的 UTC 时刻（如调度 NextFireAt）。
+ * 无时区后缀时按 UTC 解析，避免被当成本地时间而早 8 小时。
+ */
+export function formatUtcDateTime(value?: Date | null | string) {
+  if (!value) return '—';
+  const d =
+    typeof value === 'string'
+      ? new Date(/([zZ]|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`)
+      : value;
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString('zh-CN', { hour12: false });
 }

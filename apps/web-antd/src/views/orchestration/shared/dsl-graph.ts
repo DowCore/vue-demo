@@ -168,6 +168,8 @@ export interface DslNode {
   payloadMode?: string;
   payloadFrom?: string;
   payload?: { item?: OutputMapItem[] };
+  /** SubFlow */
+  subFlowKey?: string;
 }
 
 export interface DslEdge {
@@ -402,6 +404,10 @@ export function nodeCaption(node: DslNode | Record<string, unknown>) {
   if (type === 'HttpCall' && n.url) {
     return `${asyncPrefix}${n.method || 'GET'} ${n.url}`;
   }
+  if (type === 'SubFlow') {
+    const key = (n as DslNode).subFlowKey || '';
+    return key ? `${asyncPrefix}SubFlow ${key}` : `${asyncPrefix}逻辑组件`;
+  }
   if (type === 'Assign') {
     const outputs = n.outputs;
     if (outputs?.length) {
@@ -492,6 +498,7 @@ return {
     payloadMode: 'object',
     payloadFrom: '',
     payloadJson: '[]',
+    subFlowKey: '',
   };
 
   if (normalized === 'Condition') {
@@ -568,6 +575,21 @@ return {
     );
     // 消息体字段即「输出内容」；回执由执行器自动写入，无需配 outputs
     base.outputsJson = '[]';
+  }
+
+  if (normalized === 'SubFlow') {
+    base.refName = 'sub1';
+    base.subFlowKey = '';
+    base.onError = 'fail';
+    base.resultRoot = 'data';
+    base.asyncMode = false;
+    base.inputsJson = serializeBindings([
+      { name: 'amount', from: 'input.amount' },
+    ]);
+    base.outputsJson = serializeBindings([
+      { name: 'level', from: 'level' },
+      { name: 'success', from: 'success' },
+    ]);
   }
 
   if (normalized === 'Throw') {
@@ -782,6 +804,7 @@ export function dslToGraph(
         payloadMode: node.payloadMode || 'object',
         payloadFrom: node.payloadFrom || '',
         payloadJson: JSON.stringify(node.payload?.item || [], null, 0),
+        subFlowKey: node.subFlowKey || '',
       },
     };
   });
@@ -924,6 +947,12 @@ export function graphToDsl(
       } catch {
         /* ignore */
       }
+    }
+
+    if (type === 'SubFlow') {
+      node.subFlowKey = String(p.subFlowKey || '').trim() || undefined;
+      node.onError = String(p.onError || 'fail') || 'fail';
+      if (!node.resultRoot) node.resultRoot = 'data';
     }
 
     if (type === 'End') {

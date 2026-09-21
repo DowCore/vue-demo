@@ -10,7 +10,11 @@ import type {
 } from '../shared/dsl-graph';
 import type { FlowNodeKind } from '../shared/flow-meta';
 
-import type { DataSourceLookup, FlowInstance } from '#/api/saas/orchestration';
+import type {
+  DataSourceLookup,
+  FlowInstance,
+  ReusableFlowLookup,
+} from '#/api/saas/orchestration';
 
 import {
   computed,
@@ -49,6 +53,7 @@ import {
   dryRunFlowInstanceApi,
   getDataSourceLookupApi,
   getFlowDefinitionApi,
+  getReusableFlowLookupApi,
   publishFlowDefinitionApi,
   updateFlowDefinitionApi,
 } from '#/api/saas/orchestration';
@@ -112,6 +117,7 @@ const meta = reactive({
   name: '',
   code: '',
   category: '',
+  isReusable: false,
 });
 
 const selected = reactive({
@@ -154,6 +160,7 @@ const selected = reactive({
   payloadMode: 'object',
   payloadFrom: '',
   payloadJson: '[]',
+  subFlowKey: '',
   when: '',
   combine: '',
   isDefault: false,
@@ -168,6 +175,9 @@ const showInputsJson = ref(false);
 const inputsJsonText = ref('[]');
 const outputsJsonText = ref('[]');
 const dataSourceOptions = ref<Array<{ label: string; value: string }>>([]);
+const reusableFlowOptions = ref<
+  Array<{ label: string; value: string; version: number }>
+>([]);
 const codeHelpOpen = ref(false);
 
 let canvas: FlowCanvas | null = null;
@@ -181,6 +191,21 @@ async function loadDataSourceLookup() {
     }));
   } catch {
     dataSourceOptions.value = [];
+  }
+}
+
+async function loadReusableFlowLookup() {
+  try {
+    const res = await getReusableFlowLookupApi();
+    reusableFlowOptions.value = (res.items || []).map(
+      (x: ReusableFlowLookup) => ({
+        value: x.code,
+        label: `${x.name} (${x.code} · v${x.publishedVersion})`,
+        version: x.publishedVersion,
+      }),
+    );
+  } catch {
+    reusableFlowOptions.value = [];
   }
 }
 
@@ -446,6 +471,7 @@ const paletteGroups = computed(() => [
         'Log',
         'Mask',
         'RabbitMqPublish',
+        'SubFlow',
         'Throw',
       ].includes(x.kind),
     ),
@@ -603,6 +629,7 @@ function applySelection(kind: '' | 'edge' | 'node', data?: any) {
     selected.payloadMode = String(p.payloadMode || 'object');
     selected.payloadFrom = String(p.payloadFrom || '');
     selected.payloadJson = String(p.payloadJson || '[]');
+    selected.subFlowKey = String(p.subFlowKey || '');
   } else {
     selected.when = '';
     selected.combine = String(data.properties?.combine || '');
@@ -664,6 +691,7 @@ function syncSelectionToCanvas() {
       payloadMode: selected.payloadMode || 'object',
       payloadFrom: selected.payloadFrom || '',
       payloadJson: selected.payloadJson || '[]',
+      subFlowKey: selected.subFlowKey || '',
     });
   } else if (selected.kind === 'edge') {
     canvas.setEdgeBranch(selected.id, {
@@ -753,6 +781,7 @@ async function load() {
     meta.name = detail.name;
     meta.code = detail.code;
     meta.category = detail.category || '';
+    meta.isReusable = !!detail.isReusable;
     status.value = detail.status;
     publishedVersion.value = detail.publishedVersion;
 
@@ -875,6 +904,7 @@ async function save() {
     await updateFlowDefinitionApi(definitionId.value, {
       name: meta.name,
       category: meta.category || undefined,
+      isReusable: meta.isReusable,
       graphJson: JSON.stringify(graph),
       dslJson: JSON.stringify(dsl, null, 2),
     });
@@ -1006,6 +1036,7 @@ watch(
     selected.payloadMode,
     selected.payloadFrom,
     selected.payloadJson,
+    selected.subFlowKey,
     selected.when,
     selected.combine,
     selected.isDefault,
@@ -1017,6 +1048,7 @@ watch(
 
 onMounted(() => {
   void loadDataSourceLookup();
+  void loadReusableFlowLookup();
   void load();
 });
 onBeforeUnmount(() => {
@@ -1262,7 +1294,9 @@ onBeforeUnmount(() => {
                                       ? 'lucide:eye-off'
                                       : item.kind === 'RabbitMqPublish'
                                         ? 'lucide:radio'
-                                        : 'lucide:scroll-text'
+                                        : item.kind === 'SubFlow'
+                                          ? 'lucide:boxes'
+                                          : 'lucide:scroll-text'
                     "
                   />
                 </div>
@@ -1691,6 +1725,50 @@ onBeforeUnmount(() => {
                 </div>
               </template>
 
+              <template v-if="selected.nodeType === 'SubFlow'">
+                <div class="mb-1 text-sm font-medium">调用逻辑组件</div>
+                <div
+                  class="mb-2 text-[11px] leading-relaxed text-muted-foreground"
+                >
+                  选择已发布且勾选「可复用」的流程。本节点
+                  <code>inputs</code>
+                  会作为子流程请求体；子流程 End 出参落在
+                  <code>data</code>
+                  ，默认
+                  <code>resultRoot=data</code>
+                  。嵌套上限 5 层，禁止循环引用。
+                </div>
+                <Form.Item label="逻辑组件（flowKey）" required>
+                  <Select
+                    v-model:value="selected.subFlowKey"
+                    class="w-full"
+                    show-search
+                    allow-clear
+                    option-filter-prop="label"
+                    :options="reusableFlowOptions"
+                    placeholder="选择已发布可复用逻辑"
+                    @change="dirty = true"
+                  />
+                </Form.Item>
+                <Form.Item label="失败策略">
+                  <Select
+                    v-model:value="selected.onError"
+                    class="w-full"
+                    :options="[
+                      { label: '失败中断流程', value: 'fail' },
+                      { label: '忽略并继续', value: 'ignore' },
+                    ]"
+                  />
+                </Form.Item>
+                <Form.Item label="业务根 resultRoot">
+                  <Input
+                    v-model:value="selected.resultRoot"
+                    class="font-mono"
+                    placeholder="data"
+                  />
+                </Form.Item>
+              </template>
+
               <template
                 v-if="
                   isExecutableKind(selected.nodeType) &&
@@ -1701,7 +1779,8 @@ onBeforeUnmount(() => {
                   v-if="
                     selected.nodeType !== 'HttpCall' &&
                     selected.nodeType !== 'Throw' &&
-                    selected.nodeType !== 'RabbitMqPublish'
+                    selected.nodeType !== 'RabbitMqPublish' &&
+                    selected.nodeType !== 'SubFlow'
                   "
                   label="执行方式"
                 >
@@ -1729,6 +1808,19 @@ onBeforeUnmount(() => {
                     出参写法）。引用名仅用于下游看回执：
                     <code>{{ selected.refName || 'mqBroadcast' }}.published</code>
                     （自动写出，无需再配出参）。
+                  </template>
+                  <template v-else-if="selected.nodeType === 'SubFlow'">
+                    下游可读
+                    <code>{{ selected.refName || 'sub1' }}.level</code>
+                    （来自子流程 data）或信封字段
+                    <code>success</code>
+                    /
+                    <code>subFlowKey</code>
+                    。出参
+                    <code>from</code>
+                    默认相对
+                    <code>data</code>
+                    。
                   </template>
                   <template v-else>
                     下游可写
@@ -1948,6 +2040,16 @@ onBeforeUnmount(() => {
             <Form layout="vertical" size="small">
               <Form.Item label="分类">
                 <Input v-model:value="meta.category" @change="dirty = true" />
+              </Form.Item>
+              <Form.Item label="可复用逻辑组件">
+                <Switch
+                  v-model:checked="meta.isReusable"
+                  @change="dirty = true"
+                />
+                <div class="mt-1 text-[11px] text-muted-foreground">
+                  开启后，本流程出现在其它流程的「逻辑组件 /
+                  SubFlow」选用列表（需已发布）。
+                </div>
               </Form.Item>
               <Form.Item label="编码 / flowKey">
                 <Input :value="meta.code" class="font-mono" disabled />
