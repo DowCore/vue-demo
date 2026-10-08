@@ -27,6 +27,7 @@ import {
   updateFlowScheduleApi,
 } from '#/api/saas/orchestration';
 
+import CronExpressionEditor from '../shared/cron-expression-editor.vue';
 import { formatUtcDateTime } from '../shared/flow-meta';
 
 defineOptions({ name: 'OrchestrationSchedules' });
@@ -293,7 +294,7 @@ onMounted(load);
       :confirm-loading="saving"
       :title="editingId ? '编辑定时任务' : '新建定时任务'"
       destroy-on-close
-      width="560px"
+      width="640px"
       @ok="save"
     >
       <Form class="mt-2" layout="vertical">
@@ -314,12 +315,8 @@ onMounted(load);
             placeholder="order-http-demo"
           />
         </Form.Item>
-        <Form.Item label="Cron（支持 5/6 段）" required>
-          <Input
-            v-model:value="form.cron"
-            class="font-mono"
-            placeholder="0 */5 * * * * = 每 5 分钟"
-          />
+        <Form.Item label="执行计划（Cron）" required>
+          <CronExpressionEditor v-model="form.cron" />
         </Form.Item>
         <Form.Item label="时区">
           <Input

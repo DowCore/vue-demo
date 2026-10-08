@@ -1,5 +1,12 @@
 <script lang="ts" setup>
-import type { AppResource } from '#/api/saas/orchestration';
+import type {
+  AppResource,
+  DbQueryObject,
+  FormDef,
+  ListColumnDef,
+  NamedDict,
+  TableColumn,
+} from '#/api/saas/orchestration';
 import type { FilterNode } from '#/views/orchestration/shared/filter-model';
 
 import { computed, onMounted, ref } from 'vue';
@@ -15,26 +22,35 @@ import {
   Input,
   InputNumber,
   message,
-  Select,
   Space,
   Switch,
+  Tabs,
 } from 'ant-design-vue';
 
 import {
   getAppResourceApi,
   publishAppResourceApi,
+  refreshQueryObjectApi,
   updateAppResourceApi,
 } from '#/api/saas/orchestration';
+import ActionListEditor from '#/views/orchestration/shared/action-list-editor.vue';
+import ColumnDisplayEditor from '#/views/orchestration/shared/column-display-editor.vue';
+import DictCatalogEditor from '#/views/orchestration/shared/dict-catalog-editor.vue';
 import FilterGroupEditor from '#/views/orchestration/shared/filter-group-editor.vue';
 import { ensureGroup } from '#/views/orchestration/shared/filter-model';
+import FormLayoutDesigner from '#/views/orchestration/shared/form-layout-designer.vue';
+import { applyColumnLayoutDefaults } from '#/views/orchestration/shared/format-cell';
+import { migrateActions } from '#/views/orchestration/shared/open-action';
+import SearchFieldList from '#/views/orchestration/shared/search-field-list.vue';
 
 defineOptions({ name: 'OrchestrationResourceEditor' });
 
 const route = useRoute();
 const router = useRouter();
-const loading = ref(false);
 const saving = ref(false);
+const syncing = ref(false);
 const resource = ref<AppResource | null>(null);
+const tab = ref('query');
 
 const fieldOptions = computed(() =>
   (resource.value?.listView.columns || []).map((c) => ({
@@ -46,9 +62,77 @@ const fieldOptions = computed(() =>
 const dataScope = computed({
   get: () => ensureGroup(resource.value?.filter.dataScope),
   set: (value: FilterNode) => {
-    if (resource.value) {
-      resource.value.filter.dataScope = value;
+    if (resource.value) resource.value.filter.dataScope = value;
+  },
+});
+
+const searchFields = computed({
+  get: () => resource.value?.filter.searchForm?.fields || [],
+  set: (value) => {
+    if (!resource.value) return;
+    resource.value.filter.searchForm = {
+      columns: resource.value.filter.searchForm?.columns || 3,
+      fields: value,
+    };
+  },
+});
+
+const columnsModel = computed({
+  get: () => resource.value?.listView.columns || [],
+  set: (value) => {
+    if (resource.value) resource.value.listView.columns = value;
+  },
+});
+
+const actionsModel = computed({
+  get: () => resource.value?.listView.actions || [],
+  set: (value) => {
+    if (resource.value) resource.value.listView.actions = value;
+  },
+});
+
+const formModel = computed({
+  get: (): FormDef => resource.value?.form || { fields: [] },
+  set: (value: FormDef) => {
+    if (resource.value) resource.value.form = value;
+  },
+});
+
+const resourceFlowsModel = computed({
+  get: () =>
+    resource.value
+      ? {
+          queryFlowKey: resource.value.queryFlowKey,
+          getFlowKey: resource.value.getFlowKey,
+          createFlowKey: resource.value.createFlowKey,
+          updateFlowKey: resource.value.updateFlowKey,
+          deleteFlowKey: resource.value.deleteFlowKey,
+        }
+      : undefined,
+  set: (value) => {
+    if (!resource.value || !value) return;
+    if (value.queryFlowKey !== undefined && value.queryFlowKey !== null) {
+      resource.value.queryFlowKey = value.queryFlowKey;
     }
+    if (value.getFlowKey !== undefined && value.getFlowKey !== null) {
+      resource.value.getFlowKey = value.getFlowKey;
+    }
+    if (value.createFlowKey !== undefined && value.createFlowKey !== null) {
+      resource.value.createFlowKey = value.createFlowKey;
+    }
+    if (value.updateFlowKey !== undefined && value.updateFlowKey !== null) {
+      resource.value.updateFlowKey = value.updateFlowKey;
+    }
+    if (value.deleteFlowKey !== undefined && value.deleteFlowKey !== null) {
+      resource.value.deleteFlowKey = value.deleteFlowKey;
+    }
+  },
+});
+
+const dictionariesModel = computed({
+  get: (): NamedDict[] => resource.value?.listView.dictionaries || [],
+  set: (value: NamedDict[]) => {
+    if (resource.value) resource.value.listView.dictionaries = value;
   },
 });
 
@@ -58,16 +142,133 @@ async function load() {
     message.warning('缺少资源 Id');
     return;
   }
-  loading.value = true;
+  resource.value = await getAppResourceApi(id);
+  resource.value.filter.searchForm ??= { columns: 3, fields: [] };
+  resource.value.filter.dataScope = ensureGroup(
+    resource.value.filter.dataScope,
+  );
+  resource.value.filter.advancedFilter ??= true;
+  resource.value.listView.dictionaries ??= [];
+  resource.value.listView.actions = migrateActions(
+    resource.value.listView.actions,
+  );
+}
+
+function controlOf(type?: string, procedure = false) {
+  switch (type) {
+    case 'boolean': {
+      return { op: 'eq', control: 'switch' };
+    }
+    case 'int':
+    case 'long':
+    case 'decimal': {
+      return procedure
+        ? { op: 'eq', control: 'number' }
+        : { op: 'between', control: 'numberRange' };
+    }
+    case 'date':
+    case 'datetime': {
+      return procedure
+        ? { op: 'eq', control: 'date' }
+        : { op: 'between', control: 'dateRange' };
+    }
+    default: {
+      return procedure
+        ? { op: 'eq', control: 'input' }
+        : { op: 'contains', control: 'input' };
+    }
+  }
+}
+
+function listFormat(type: string | undefined) {
+  if (type === 'datetime') return 'datetime';
+  if (type === 'date') return 'date';
+  if (type === 'decimal') return 'currency';
+  if (type === 'boolean') return 'boolean';
+  if (type === 'int' || type === 'long') return 'number';
+  return 'text';
+}
+
+function formControl(type: string | undefined) {
+  if (type === 'boolean') return 'switch';
+  if (type === 'int' || type === 'long' || type === 'decimal') return 'number';
+  if (type === 'date') return 'date';
+  if (type === 'datetime') return 'datetime';
+  if (type === 'text') return 'textarea';
+  return 'input';
+}
+
+function toListColumn(column: TableColumn): ListColumnDef {
+  return applyColumnLayoutDefaults({
+    field: column.name,
+    title: column.displayName || column.name,
+    visible: true,
+    sortable: true,
+    formatPreset: listFormat(column.platformType),
+  });
+}
+
+async function syncColumns() {
+  if (!resource.value?.queryObjectId) {
+    message.warning('当前资源没有关联视图或存储过程，无法同步列');
+    return;
+  }
+  syncing.value = true;
   try {
-    resource.value = await getAppResourceApi(id);
-    resource.value.filter.searchForm ??= { columns: 3, fields: [] };
-    resource.value.filter.dataScope = ensureGroup(
-      resource.value.filter.dataScope,
+    const queryObject: DbQueryObject = await refreshQueryObjectApi(
+      resource.value.queryObjectId,
     );
-    resource.value.filter.advancedFilter ??= true;
+    const columns = queryObject.columns || [];
+    if (columns.length === 0) {
+      message.warning(
+        queryObject.importWarning ||
+          '数据库没有返回可用列。请确认账号能查看该视图的列，然后重试。',
+      );
+      return;
+    }
+    resource.value.listView.columns = columns.map((item) => toListColumn(item));
+    const procedure = resource.value.sourceKind === 'procedure';
+    const searchSource = procedure
+      ? (queryObject.parameters || [])
+          .filter((item) => item.direction !== 'out')
+          .slice(0, 8)
+          .map((item) => ({
+            name: item.name,
+            title: item.displayName || item.name,
+            platformType: item.platformType,
+          }))
+      : columns.slice(0, 5).map((item) => ({
+          name: item.name,
+          title: item.displayName || item.name,
+          platformType: item.platformType,
+        }));
+    resource.value.filter.searchForm = {
+      columns: 3,
+      fields: searchSource.map((item, index) => {
+        const control = controlOf(item.platformType, procedure);
+        return {
+          key: `f${index + 1}`,
+          field: item.name,
+          title: item.title,
+          op: control.op,
+          control: control.control,
+          span: 1,
+        };
+      }),
+    };
+    resource.value.form.fields = columns.map((item) => ({
+      field: item.name,
+      title: item.displayName || item.name,
+      control: formControl(item.platformType),
+      visibleOnCreate: false,
+      visibleOnUpdate: false,
+      visibleOnDetail: true,
+      readonlyOnCreate: true,
+      readonlyOnUpdate: true,
+    }));
+    message.success(`已从数据库同步 ${columns.length} 列，请保存`);
   } finally {
-    loading.value = false;
+    syncing.value = false;
   }
 }
 
@@ -100,23 +301,6 @@ async function publish() {
   message.success('已发布');
 }
 
-function addSearchField() {
-  if (!resource.value) return;
-  resource.value.filter.searchForm ??= { columns: 3, fields: [] };
-  const i = resource.value.filter.searchForm.fields.length + 1;
-  resource.value.filter.searchForm.fields.push({
-    key: `f${i}`,
-    field: fieldOptions.value[0]?.value || '',
-    title: '条件',
-    op: 'eq',
-    control: 'input',
-  });
-}
-
-function removeSearchField(index: number) {
-  resource.value?.filter.searchForm?.fields.splice(index, 1);
-}
-
 onMounted(load);
 </script>
 
@@ -144,195 +328,107 @@ onMounted(load);
             :disabled="resource?.status !== 1"
             @click="resource && router.push(`/app/${resource.code}`)"
           >
-            打开运行时
+            打开列表
           </Button>
         </AccessControl>
       </Space>
     </div>
 
-    <Form v-if="resource" class="max-w-5xl" layout="vertical">
-      <Form.Item label="名称">
-        <Input v-model:value="resource.name" />
-      </Form.Item>
-      <Form.Item label="标题字段">
-        <Input v-model:value="resource.titleField" class="font-mono" />
-      </Form.Item>
-      <div class="mb-2 text-sm font-medium">五个 flowKey</div>
-      <div class="grid gap-3 md:grid-cols-2">
-        <Form.Item label="queryFlowKey">
-          <Input v-model:value="resource.queryFlowKey" class="font-mono" />
-        </Form.Item>
-        <Form.Item label="getFlowKey">
-          <Input v-model:value="resource.getFlowKey" class="font-mono" />
-        </Form.Item>
-        <Form.Item label="createFlowKey">
-          <Input v-model:value="resource.createFlowKey" class="font-mono" />
-        </Form.Item>
-        <Form.Item label="updateFlowKey">
-          <Input v-model:value="resource.updateFlowKey" class="font-mono" />
-        </Form.Item>
-        <Form.Item label="deleteFlowKey">
-          <Input v-model:value="resource.deleteFlowKey" class="font-mono" />
-        </Form.Item>
-      </div>
-
-      <Form.Item label="列表分页大小">
-        <InputNumber
-          v-model:value="resource.listView.pageSize"
-          :max="200"
-          :min="1"
+    <Tabs v-if="resource" v-model:active-key="tab">
+      <Tabs.TabPane key="query" tab="查询条件">
+        <div class="mb-4 rounded-md border border-border p-3">
+          <div class="mb-2 text-sm font-medium">数据范围（用户不可见）</div>
+          <FilterGroupEditor
+            v-model:model-value="dataScope"
+            :field-options="fieldOptions"
+          />
+        </div>
+        <SearchFieldList
+          v-model:model-value="searchFields"
+          :columns="resource.listView.columns"
         />
-      </Form.Item>
-      <Form.Item label="默认排序">
-        <Input
-          v-model:value="resource.listView.defaultSorting"
-          class="font-mono"
-          placeholder="CreationTime desc"
-        />
-      </Form.Item>
-
-      <div class="mb-2 mt-4 text-sm font-medium">
-        数据范围（隐藏条件，用户不可改）
-      </div>
-      <FilterGroupEditor
-        v-model:model-value="dataScope"
-        :field-options="fieldOptions"
-      />
-
-      <div class="mb-2 mt-4 flex items-center justify-between">
-        <div class="text-sm font-medium">查询表单</div>
-        <Button size="small" @click="addSearchField">添加字段</Button>
-      </div>
-      <p class="mb-2 text-xs text-muted-foreground">
-        运行时以表单查询为主。空控件不参与条件；同一「任一满足组名」的字段会按
-        OR 组合。
-      </p>
-      <div class="mb-2 flex items-center gap-2 text-sm">
-        允许更多条件
-        <Switch v-model:checked="resource.filter.advancedFilter" />
-      </div>
-      <div class="space-y-2">
-        <div
-          v-for="(field, index) in resource.filter.searchForm?.fields || []"
-          :key="field.key"
-          class="grid items-center gap-2 rounded-md border border-border p-2 md:grid-cols-6"
-        >
-          <Input v-model:value="field.title" placeholder="标题" />
-          <Select
-            v-model:value="field.field"
-            :options="fieldOptions"
-            class="w-full"
-            placeholder="字段"
-          />
-          <Select
-            v-model:value="field.control"
-            :options="[
-              { label: '文本', value: 'input' },
-              { label: '数字', value: 'number' },
-              { label: '数字区间', value: 'numberRange' },
-              { label: '日期', value: 'date' },
-              { label: '日期区间', value: 'dateRange' },
-              { label: '开关', value: 'switch' },
-            ]"
-            class="w-full"
-          />
-          <Select
-            v-model:value="field.op"
-            :options="[
-              { label: '等于', value: 'eq' },
-              { label: '包含', value: 'contains' },
-              { label: '介于', value: 'between' },
-              { label: '大于等于', value: 'gte' },
-            ]"
-            class="w-full"
-          />
-          <Input v-model:value="field.orGroup" placeholder="任一满足组名" />
-          <Button
-            danger
-            size="small"
-            type="text"
-            @click="removeSearchField(index)"
-          >
-            删除
+        <div class="mt-4 flex items-center gap-2 text-sm">
+          允许「更多条件」
+          <Switch v-model:checked="resource.filter.advancedFilter" />
+        </div>
+      </Tabs.TabPane>
+      <Tabs.TabPane key="columns" tab="列表列">
+        <div v-if="resource.queryObjectId" class="mb-3">
+          <Button :loading="syncing" type="primary" @click="syncColumns">
+            从数据库同步列
           </Button>
         </div>
-      </div>
-
-      <div class="mb-2 mt-4 text-sm font-medium">列表列</div>
-      <div class="space-y-2">
-        <div
-          v-for="col in resource.listView.columns"
-          :key="col.field"
-          class="grid items-center gap-2 rounded-md border border-border p-2 md:grid-cols-6"
-        >
-          <Input v-model:value="col.title" placeholder="标题" />
-          <Input :value="col.field" class="font-mono" disabled />
-          <Select
-            v-model:value="col.formatPreset"
-            :options="[
-              { label: '文本', value: 'text' },
-              { label: '日期', value: 'date' },
-              { label: '时间', value: 'datetime' },
-              { label: '金额', value: 'currency' },
-              { label: '数字', value: 'number' },
-              { label: '是否', value: 'boolean' },
-            ]"
-            allow-clear
-            class="w-full"
-          />
-          <Select
-            v-model:value="col.render"
-            :options="[
-              { label: '文本', value: 'text' },
-              { label: '标签', value: 'tag' },
-            ]"
-            class="w-full"
-          />
-          <Select
-            v-model:value="col.summaryFn"
-            :options="[
-              { label: '无汇总', value: undefined },
-              { label: '合计', value: 'sum' },
-              { label: '平均', value: 'avg' },
-              { label: '计数', value: 'count' },
-            ]"
-            allow-clear
-            class="w-full"
-            placeholder="汇总"
-            size="small"
-          />
-          <div class="flex items-center gap-2 text-sm">
-            可见 <Switch v-model:checked="col.visible" /> 排序
-            <Switch v-model:checked="col.sortable" />
-          </div>
-        </div>
-      </div>
-
-      <div class="mb-2 mt-4 text-sm font-medium">表单字段</div>
-      <div class="space-y-2">
-        <div
-          v-for="field in resource.form.fields"
-          :key="field.field"
-          class="grid items-center gap-2 rounded-md border border-border p-2 sm:grid-cols-4"
-        >
-          <div>
-            <div class="font-mono text-xs">{{ field.field }}</div>
-            <Input v-model:value="field.title" size="small" />
-          </div>
-          <div class="text-xs">
-            新增可见
-            <Switch v-model:checked="field.visibleOnCreate" size="small" />
-          </div>
-          <div class="text-xs">
-            编辑可见
-            <Switch v-model:checked="field.visibleOnUpdate" size="small" />
-          </div>
-          <div class="text-xs">
-            编辑只读
-            <Switch v-model:checked="field.readonlyOnUpdate" size="small" />
-          </div>
-        </div>
-      </div>
-    </Form>
+        <ColumnDisplayEditor
+          v-model:model-value="columnsModel"
+          v-model:dictionaries="dictionariesModel"
+          :empty-text="
+            resource.queryObjectId
+              ? '还没有列。点「从数据库同步列」读取视图或存储过程的列，或填写字段名后添加。'
+              : undefined
+          "
+          :hint="
+            resource.queryObjectId
+              ? '视图和存储过程的列以数据库为准。同步后记得保存。手工添加时必须先填字段名。'
+              : undefined
+          "
+        />
+      </Tabs.TabPane>
+      <Tabs.TabPane key="dicts" tab="通用字典">
+        <DictCatalogEditor v-model:model-value="dictionariesModel" />
+      </Tabs.TabPane>
+      <Tabs.TabPane key="actions" tab="按钮">
+        <ActionListEditor
+          v-model:model-value="actionsModel"
+          :columns="resource.listView.columns"
+        />
+      </Tabs.TabPane>
+      <Tabs.TabPane key="form" tab="表单（可迁表单库）">
+        <FormLayoutDesigner
+          v-model:model-value="formModel"
+          v-model:resource-flows="resourceFlowsModel"
+          :columns="resource.listView.columns"
+          :resource-code="resource.code"
+          :code-prefix="resource.code"
+        />
+      </Tabs.TabPane>
+      <Tabs.TabPane key="basic" tab="基本信息">
+        <Form class="max-w-xl" layout="vertical">
+          <Form.Item label="名称">
+            <Input v-model:value="resource.name" />
+          </Form.Item>
+          <Form.Item label="标题字段">
+            <Input v-model:value="resource.titleField" class="font-mono" />
+          </Form.Item>
+          <Form.Item label="默认排序">
+            <Input
+              v-model:value="resource.listView.defaultSorting"
+              class="font-mono"
+            />
+          </Form.Item>
+          <Form.Item label="分页大小">
+            <InputNumber
+              v-model:value="resource.listView.pageSize"
+              :max="200"
+              :min="1"
+            />
+          </Form.Item>
+          <Form.Item label="queryFlowKey">
+            <Input v-model:value="resource.queryFlowKey" class="font-mono" />
+          </Form.Item>
+          <Form.Item label="getFlowKey">
+            <Input v-model:value="resource.getFlowKey" class="font-mono" />
+          </Form.Item>
+          <Form.Item label="createFlowKey">
+            <Input v-model:value="resource.createFlowKey" class="font-mono" />
+          </Form.Item>
+          <Form.Item label="updateFlowKey">
+            <Input v-model:value="resource.updateFlowKey" class="font-mono" />
+          </Form.Item>
+          <Form.Item label="deleteFlowKey">
+            <Input v-model:value="resource.deleteFlowKey" class="font-mono" />
+          </Form.Item>
+        </Form>
+      </Tabs.TabPane>
+    </Tabs>
   </Page>
 </template>

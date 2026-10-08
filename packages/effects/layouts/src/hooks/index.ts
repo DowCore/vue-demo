@@ -62,6 +62,15 @@ function withRouteErrorBoundary(component: VNode, name: string): VNode {
       setup(_, { slots }) {
         const error = ref<unknown>(null);
         onErrorCaptured((err) => {
+          // API / Axios 失败由 request 拦截器弹 toast，不应当成整页渲染失败
+          const anyErr = err as { isAxiosError?: boolean; name?: string };
+          if (
+            anyErr?.isAxiosError ||
+            anyErr?.name === 'AxiosError' ||
+            (err instanceof Error && /status code \d{3}/i.test(err.message))
+          ) {
+            return false;
+          }
           error.value = err;
           console.error(`[RouteError] ${name}`, err);
           return false;

@@ -1,8 +1,20 @@
 <script lang="ts" setup>
-import type { ReportDefinition } from '#/api/saas/orchestration';
-import type { FilterNode } from '#/views/orchestration/shared/filter-model';
+import type {
+  AppResource,
+  DataSourceLookup,
+  FormDef,
+  ListColumnDef,
+  NamedDict,
+  ReportDefinition,
+  ReusableFlowLookup,
+  TableDefinition,
+} from '#/api/saas/orchestration';
+import type {
+  FilterNode,
+  SearchFormFieldDef,
+} from '#/views/orchestration/shared/filter-model';
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { AccessControl } from '@vben/access';
@@ -15,30 +27,54 @@ import {
   Input,
   InputNumber,
   message,
+  Modal,
+  Radio,
   Select,
   Space,
   Switch,
+  Tabs,
 } from 'ant-design-vue';
 
 import {
+  getAppResourcesApi,
+  getDataSourceLookupApi,
   getReportApi,
+  getReusableFlowLookupApi,
+  getTableDefinitionsApi,
   publishReportApi,
   updateReportApi,
 } from '#/api/saas/orchestration';
+import ActionListEditor from '#/views/orchestration/shared/action-list-editor.vue';
+import ColumnDisplayEditor from '#/views/orchestration/shared/column-display-editor.vue';
+import DictCatalogEditor from '#/views/orchestration/shared/dict-catalog-editor.vue';
 import FilterGroupEditor from '#/views/orchestration/shared/filter-group-editor.vue';
-import { ensureGroup } from '#/views/orchestration/shared/filter-model';
 import {
-  formatDictMap,
-  parseDictMap,
-} from '#/views/orchestration/shared/format-cell';
+  applyQueryMode,
+  ensureGroup,
+  queryModeFromPreset,
+} from '#/views/orchestration/shared/filter-model';
+import FormLayoutDesigner from '#/views/orchestration/shared/form-layout-designer.vue';
+import { applyColumnLayoutDefaults } from '#/views/orchestration/shared/format-cell';
+import { migrateActions } from '#/views/orchestration/shared/open-action';
+import SearchFieldList from '#/views/orchestration/shared/search-field-list.vue';
 
 defineOptions({ name: 'OrchestrationReportEditor' });
 
 const route = useRoute();
 const router = useRouter();
-const loading = ref(false);
 const saving = ref(false);
 const report = ref<null | ReportDefinition>(null);
+const tab = ref('source');
+const resources = ref<AppResource[]>([]);
+const dataSources = ref<DataSourceLookup[]>([]);
+const tables = ref<TableDefinition[]>([]);
+const flows = ref<ReusableFlowLookup[]>([]);
+
+const kindOptions = [
+  { label: '资源表', value: 'resource' },
+  { label: '数据源 + 表', value: 'table' },
+  { label: '查询流', value: 'flow' },
+];
 
 const fieldOptions = computed(() =>
   (report.value?.columns || []).map((c) => ({
@@ -47,6 +83,18 @@ const fieldOptions = computed(() =>
   })),
 );
 
+const sourceDescription = computed(() => {
+  const row = report.value;
+  if (!row) return '加载中';
+  if (row.kind === 'table') {
+    return (
+      [row.dataSourceCode, row.tableName].filter(Boolean).join('.') || '物理表'
+    );
+  }
+  if (row.kind === 'flow') return row.queryFlowKey || '查询流';
+  return row.resourceCode || '资源';
+});
+
 const dataScope = computed({
   get: () => ensureGroup(report.value?.dataScope),
   set: (value: FilterNode) => {
@@ -54,22 +102,296 @@ const dataScope = computed({
   },
 });
 
+const searchFields = computed({
+  get: () => report.value?.searchForm?.fields || [],
+  set: (value) => {
+    if (!report.value) return;
+    report.value.searchForm = {
+      columns: report.value.searchForm?.columns || 3,
+      fields: value,
+    };
+  },
+});
+
+const columnsModel = computed({
+  get: () => report.value?.columns || [],
+  set: (value) => {
+    if (report.value) report.value.columns = value;
+  },
+});
+
+const actionsModel = computed({
+  get: () => report.value?.actions || [],
+  set: (value) => {
+    if (report.value) report.value.actions = value;
+  },
+});
+
+const formModel = computed({
+  get: (): FormDef => report.value?.form || { fields: [] },
+  set: (value: FormDef) => {
+    if (report.value) report.value.form = value;
+  },
+});
+
+const dictionariesModel = computed({
+  get: (): NamedDict[] => report.value?.dictionaries || [],
+  set: (value: NamedDict[]) => {
+    if (report.value) report.value.dictionaries = value;
+  },
+});
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function searchFieldsFromColumns(
+  columns: ListColumnDef[],
+): SearchFormFieldDef[] {
+  return columns
+    .filter((c) => c.visible !== false)
+    .slice(0, 6)
+    .map((c) => {
+      const item: SearchFormFieldDef = {
+        key: `f_${c.field}`,
+        field: c.field,
+        title: c.title || c.field,
+        op: 'contains',
+        control: 'input',
+      };
+      applyQueryMode(item, queryModeFromPreset(c.formatPreset));
+      return item;
+    });
+}
+
+function applyResourceUi(row: AppResource) {
+  if (!report.value) return;
+  const columns = cloneJson(row.listView?.columns || []);
+  report.value.columns = columns;
+  report.value.actions = migrateActions(cloneJson(row.listView?.actions || []));
+  report.value.form = cloneJson(row.form || { fields: [] });
+  report.value.dictionaries = cloneJson(row.listView?.dictionaries || []);
+  report.value.defaultSorting = row.listView?.defaultSorting;
+  report.value.pageSize = row.listView?.pageSize || report.value.pageSize || 20;
+  const search = row.filter?.searchForm;
+  report.value.searchForm = {
+    columns: search?.columns || 3,
+    fields: search?.fields?.length
+      ? cloneJson(search.fields)
+      : searchFieldsFromColumns(columns),
+  };
+}
+
+function sourceIsEmpty() {
+  const row = report.value;
+  if (!row) return true;
+  return (
+    (row.columns || []).length === 0 &&
+    (row.actions || []).length === 0 &&
+    (row.searchForm?.fields || []).length === 0
+  );
+}
+
+/** 表字段类型 → 列表格式化预设。 */
+function formatPresetOf(type: string) {
+  if (type === 'datetime') return 'datetime';
+  if (type === 'date') return 'date';
+  if (type === 'decimal') return 'currency';
+  if (type === 'boolean') return 'boolean';
+  if (type === 'int' || type === 'long') return 'number';
+  return 'text';
+}
+
+function columnsFromTable(table: TableDefinition): ListColumnDef[] {
+  return (table.columns || [])
+    .filter((c) => c.origin !== 'convention' || c.name === 'CreationTime')
+    .map((c) => {
+      const type = (c.platformType || '').toLowerCase();
+      return applyColumnLayoutDefaults({
+        field: c.name,
+        title: c.displayName,
+        visible: true,
+        sortable: [
+          'date',
+          'datetime',
+          'decimal',
+          'int',
+          'long',
+          'string',
+        ].includes(type),
+        formatPreset: formatPresetOf(type),
+      });
+    });
+}
+
+async function loadTables(dataSourceCode?: string) {
+  if (!dataSourceCode) {
+    tables.value = [];
+    return;
+  }
+  const res = await getTableDefinitionsApi({
+    dataSourceCode,
+    maxResultCount: 200,
+  });
+  tables.value = res.items ?? [];
+}
+
+async function loadLookups() {
+  const [resourceRes, dsRes, flowRes] = await Promise.all([
+    getAppResourcesApi({ maxResultCount: 200 }),
+    getDataSourceLookupApi(),
+    getReusableFlowLookupApi(),
+  ]);
+  resources.value = resourceRes.items ?? [];
+  dataSources.value = dsRes.items ?? [];
+  flows.value = flowRes.items ?? [];
+}
+
 async function load() {
   const id = String(route.query.id || '');
   if (!id) {
     message.warning('缺少报表 Id');
     return;
   }
-  loading.value = true;
-  try {
-    report.value = await getReportApi(id);
-    report.value.dataScope = ensureGroup(report.value.dataScope);
-    report.value.searchForm ??= { columns: 3, fields: [] };
-    report.value.presets ??= [];
-    report.value.advancedFilter ??= true;
-  } finally {
-    loading.value = false;
+  await loadLookups();
+  report.value = await getReportApi(id);
+  report.value.dataScope = ensureGroup(report.value.dataScope);
+  report.value.searchForm ??= { columns: 3, fields: [] };
+  report.value.form ??= { fields: [] };
+  report.value.dictionaries ??= [];
+  report.value.presets ??= [];
+  report.value.advancedFilter ??= true;
+  report.value.queryFlowKey ||= 'sys.resource.query';
+  report.value.actions = migrateActions(report.value.actions);
+  await loadTables(report.value.dataSourceCode);
+  if (report.value.resourceCode && sourceIsEmpty()) {
+    const row = resources.value.find(
+      (r) => r.code === report.value?.resourceCode,
+    );
+    if (row) applyResourceUi(row);
   }
+}
+
+watch(
+  () => report.value?.dataSourceCode,
+  async (code) => {
+    if (!report.value || report.value.kind !== 'table') return;
+    await loadTables(code);
+  },
+);
+
+function onKindChange(kind: string) {
+  if (!report.value) return;
+  report.value.kind = kind;
+  if (kind === 'table') {
+    report.value.queryFlowKey ||= 'sys.resource.query';
+  }
+}
+
+async function onPickResource(code: string) {
+  if (!report.value) return;
+  report.value.resourceCode = code || undefined;
+  const row = resources.value.find((r) => r.code === code);
+  if (!row || report.value.kind !== 'resource') return;
+  report.value.dataSourceCode = row.dataSourceCode;
+  report.value.tableName = row.tableName;
+  report.value.queryFlowKey = row.queryFlowKey || report.value.queryFlowKey;
+  if (sourceIsEmpty()) {
+    applyResourceUi(row);
+  }
+}
+
+function onPickWriteResource(code: string) {
+  if (!report.value) return;
+  report.value.resourceCode = code || undefined;
+  const row = resources.value.find((r) => r.code === code);
+  if (!row) return;
+  const apply = () => {
+    applyResourceUi(row);
+    message.success('已带入该资源的列、查询条件和按钮');
+    tab.value = 'query';
+  };
+  if (sourceIsEmpty()) {
+    apply();
+    return;
+  }
+  Modal.confirm({
+    title: '用该资源的列、查询条件和按钮覆盖当前配置？',
+    content:
+      '查询源（查询流 / 物理表）保持不变，只带入页面上的列、筛选和按钮。',
+    onOk: apply,
+  });
+}
+
+function syncFromSource() {
+  if (!report.value) return;
+  if (report.value.kind === 'resource' || report.value.kind === 'flow') {
+    const row = resources.value.find(
+      (r) => r.code === report.value?.resourceCode,
+    );
+    if (!row) {
+      message.warning(
+        report.value.kind === 'flow'
+          ? '查询流没有固定表结构。请绑定写入资源以带入列和按钮，或到「列表列 / 查询条件 / 按钮」手工添加。'
+          : '请先选择资源',
+      );
+      return;
+    }
+    const apply = () => {
+      applyResourceUi(row);
+      message.success('已带入列、查询条件和按钮');
+      tab.value = 'query';
+    };
+    if (sourceIsEmpty()) {
+      apply();
+      return;
+    }
+    Modal.confirm({
+      title: '覆盖当前列、查询条件和按钮？',
+      onOk: apply,
+    });
+    return;
+  }
+
+  const table = tables.value.find(
+    (t) =>
+      t.dataSourceCode === report.value?.dataSourceCode &&
+      t.tableName === report.value?.tableName,
+  );
+  if (!table) {
+    message.warning('请先选择数据源和物理表');
+    return;
+  }
+  const write = resources.value.find(
+    (r) => r.code === report.value?.resourceCode,
+  );
+  const apply = () => {
+    if (!report.value) return;
+    const columns = columnsFromTable(table);
+    report.value.columns = columns;
+    if ((report.value.searchForm?.fields || []).length === 0) {
+      report.value.searchForm = {
+        columns: report.value.searchForm?.columns || 3,
+        fields: searchFieldsFromColumns(columns),
+      };
+    }
+    if (write) {
+      report.value.actions = migrateActions(
+        cloneJson(write.listView?.actions || []),
+      );
+      report.value.form = cloneJson(write.form || { fields: [] });
+    }
+    message.success('已按物理表同步列和查询条件');
+    tab.value = 'query';
+  };
+  if (sourceIsEmpty()) {
+    apply();
+    return;
+  }
+  Modal.confirm({
+    title: '覆盖当前列配置？',
+    onOk: apply,
+  });
 }
 
 async function save() {
@@ -80,6 +402,8 @@ async function save() {
       name: report.value.name,
       kind: report.value.kind,
       resourceCode: report.value.resourceCode,
+      dataSourceCode: report.value.dataSourceCode,
+      tableName: report.value.tableName,
       queryFlowKey: report.value.queryFlowKey,
       dataScope: report.value.dataScope,
       searchForm: report.value.searchForm,
@@ -88,6 +412,8 @@ async function save() {
       kpis: report.value.kpis,
       columns: report.value.columns,
       actions: report.value.actions,
+      form: report.value.form,
+      dictionaries: report.value.dictionaries,
       defaultSorting: report.value.defaultSorting,
       pageSize: report.value.pageSize,
       selectionEnabled: report.value.selectionEnabled,
@@ -103,24 +429,7 @@ async function publish() {
   if (!report.value) return;
   await save();
   report.value = await publishReportApi(report.value.id);
-  message.success('已发布，可挂到菜单「报表运行时」路由 /app/reports/{编码}');
-}
-
-function addSearchField() {
-  if (!report.value) return;
-  report.value.searchForm ??= { columns: 3, fields: [] };
-  const i = report.value.searchForm.fields.length + 1;
-  report.value.searchForm.fields.push({
-    key: `f${i}`,
-    field: fieldOptions.value[0]?.value || '',
-    title: '条件',
-    op: 'eq',
-    control: 'input',
-  });
-}
-
-function removeSearchField(index: number) {
-  report.value?.searchForm?.fields.splice(index, 1);
+  message.success('已发布');
 }
 
 onMounted(load);
@@ -128,7 +437,7 @@ onMounted(load);
 
 <template>
   <Page
-    :description="report ? report.resourceCode || report.kind : '加载中'"
+    :description="sourceDescription"
     :title="report ? `报表配置 · ${report.name}` : '报表配置'"
   >
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -148,232 +457,172 @@ onMounted(load);
             :disabled="report?.status !== 1"
             @click="report && router.push(`/app/reports/${report.code}`)"
           >
-            打开运行时
+            打开列表
           </Button>
         </AccessControl>
       </Space>
     </div>
 
-    <Form v-if="report" class="max-w-5xl" layout="vertical">
-      <Form.Item label="名称">
-        <Input v-model:value="report.name" />
-      </Form.Item>
-      <Form.Item label="说明">
-        <Input v-model:value="report.description" />
-      </Form.Item>
-      <div class="grid gap-3 md:grid-cols-2">
-        <Form.Item label="queryFlowKey">
-          <Input v-model:value="report.queryFlowKey" class="font-mono" />
-        </Form.Item>
-        <Form.Item label="默认排序">
-          <Input v-model:value="report.defaultSorting" class="font-mono" />
-        </Form.Item>
-      </div>
-      <Form.Item label="分页大小">
-        <InputNumber v-model:value="report.pageSize" :max="200" :min="1" />
-      </Form.Item>
-      <div class="mb-2 flex items-center gap-2 text-sm">
-        允许更多条件
-        <Switch v-model:checked="report.advancedFilter" />
-        多选行
-        <Switch v-model:checked="report.selectionEnabled" />
-      </div>
-
-      <div class="mb-2 mt-4 text-sm font-medium">
-        数据范围（用户不可见，隐藏条件）
-      </div>
-      <FilterGroupEditor
-        v-model:model-value="dataScope"
-        :field-options="fieldOptions"
-      />
-
-      <div class="mb-2 mt-6 flex items-center justify-between">
-        <div class="text-sm font-medium">
-          查询表单（普通人填表即筛，空着不算）
-        </div>
-        <Button size="small" @click="addSearchField">添加字段</Button>
-      </div>
-      <div class="space-y-2">
-        <div
-          v-for="(field, index) in report.searchForm?.fields || []"
-          :key="field.key"
-          class="grid items-center gap-2 rounded-md border border-border p-2 md:grid-cols-6"
-        >
-          <Input v-model:value="field.title" placeholder="标题" />
-          <Select
-            v-model:value="field.field"
-            :options="fieldOptions"
-            class="w-full"
-            placeholder="字段"
-          />
-          <Select
-            v-model:value="field.control"
-            :options="[
-              { label: '文本', value: 'input' },
-              { label: '数字', value: 'number' },
-              { label: '数字区间', value: 'numberRange' },
-              { label: '日期', value: 'date' },
-              { label: '日期区间', value: 'dateRange' },
-              { label: '开关', value: 'switch' },
-            ]"
-            class="w-full"
-          />
-          <Select
-            v-model:value="field.op"
-            :options="[
-              { label: '等于', value: 'eq' },
-              { label: '包含', value: 'contains' },
-              { label: '介于', value: 'between' },
-              { label: '大于等于', value: 'gte' },
-            ]"
-            class="w-full"
-          />
-          <Input v-model:value="field.orGroup" placeholder="任一满足组名" />
-          <Button
-            danger
-            size="small"
-            type="text"
-            @click="removeSearchField(index)"
+    <Tabs v-if="report" v-model:active-key="tab">
+      <Tabs.TabPane key="source" tab="查询源">
+        <Form class="max-w-xl" layout="vertical">
+          <Form.Item label="查询源类型">
+            <Radio.Group
+              :options="kindOptions"
+              :value="report.kind"
+              option-type="button"
+              @update:value="(v) => onKindChange(String(v || 'resource'))"
+            />
+            <div class="mt-2 text-xs text-muted-foreground">
+              查询源只决定数据从哪来，不替代查询条件和按钮。后面几个页签始终可以配置；也可以从资源带入一版再改。
+            </div>
+          </Form.Item>
+          <Form.Item v-if="report.kind === 'resource'" label="资源" required>
+            <Select
+              :options="
+                resources.map((r) => ({
+                  label: `${r.name} (${r.code})`,
+                  value: r.code,
+                }))
+              "
+              :value="report.resourceCode"
+              class="w-full"
+              placeholder="选择资源"
+              show-search
+              @update:value="(v) => onPickResource(String(v || ''))"
+            />
+          </Form.Item>
+          <template v-if="report.kind === 'table'">
+            <Form.Item label="数据源" required>
+              <Select
+                v-model:value="report.dataSourceCode"
+                :options="
+                  dataSources.map((d) => ({
+                    label: `${d.name} (${d.code})`,
+                    value: d.code,
+                  }))
+                "
+                class="w-full"
+                placeholder="选择数据源"
+                show-search
+              />
+            </Form.Item>
+            <Form.Item label="物理表" required>
+              <Select
+                v-model:value="report.tableName"
+                :options="
+                  tables.map((t) => ({
+                    label: `${t.displayName} (${t.tableName})`,
+                    value: t.tableName,
+                  }))
+                "
+                class="w-full"
+                placeholder="选择已托管的表"
+                show-search
+              />
+            </Form.Item>
+          </template>
+          <Form.Item
+            :label="report.kind === 'flow' ? '查询流' : '查询流（可覆盖默认）'"
+            :required="report.kind === 'flow'"
           >
-            删除
+            <Select
+              v-model:value="report.queryFlowKey"
+              :options="
+                flows.map((f) => ({
+                  label: `${f.name} (${f.code})`,
+                  value: f.code,
+                }))
+              "
+              class="w-full"
+              placeholder="默认 sys.resource.query"
+              show-search
+            />
+          </Form.Item>
+          <Form.Item v-if="report.kind !== 'resource'" label="写入资源（可选）">
+            <Select
+              allow-clear
+              :options="
+                resources.map((r) => ({
+                  label: `${r.name} (${r.code})`,
+                  value: r.code,
+                }))
+              "
+              :value="report.resourceCode || undefined"
+              class="w-full"
+              placeholder="行内增删改才需要绑定资源"
+              show-search
+              @update:value="(v) => onPickWriteResource(String(v || ''))"
+            />
+          </Form.Item>
+          <Button type="primary" ghost @click="syncFromSource">
+            带入列、查询条件和按钮
           </Button>
-        </div>
-      </div>
-
-      <div class="mb-2 mt-6 text-sm font-medium">列（转换 / 着色 / 汇总）</div>
-      <div class="space-y-2">
-        <div
-          v-for="col in report.columns"
-          :key="col.field"
-          class="grid items-center gap-2 rounded-md border border-border p-2 md:grid-cols-8"
-        >
-          <Input v-model:value="col.title" placeholder="标题" />
-          <Input :value="col.field" class="font-mono" disabled />
-          <Select
-            v-model:value="col.formatPreset"
-            :options="[
-              { label: '文本', value: 'text' },
-              { label: '日期', value: 'date' },
-              { label: '时间', value: 'datetime' },
-              { label: '金额', value: 'currency' },
-              { label: '数字', value: 'number' },
-              { label: '是否', value: 'boolean' },
-            ]"
-            class="w-full"
-            allow-clear
-          />
-          <Select
-            v-model:value="col.render"
-            :options="[
-              { label: '文本', value: 'text' },
-              { label: '标签', value: 'tag' },
-            ]"
-            class="w-full"
-          />
-          <Select
-            v-model:value="col.summaryFn"
-            :options="[
-              { label: '无汇总', value: '' },
-              { label: '合计', value: 'sum' },
-              { label: '平均', value: 'avg' },
-              { label: '计数', value: 'count' },
-              { label: '最小', value: 'min' },
-              { label: '最大', value: 'max' },
-            ]"
-            allow-clear
-            class="w-full"
-            placeholder="汇总"
-          />
-          <div class="flex items-center gap-1 text-xs">
-            可见 <Switch v-model:checked="col.visible" size="small" />
-          </div>
-          <Input
-            :value="formatDictMap(col.dictMap)"
-            placeholder="字典 Approved:已审"
-            size="small"
-            @update:value="(v) => (col.dictMap = parseDictMap(String(v || '')))"
-          />
-          <Input
-            :value="col.styleRules?.[0]?.value || ''"
-            placeholder="着色值，如 Approved"
-            size="small"
-            @update:value="
-              (v) => {
-                col.styleRules = v
-                  ? [
-                      {
-                        op: 'eq',
-                        value: String(v),
-                        tone: 'success',
-                        target: 'cell',
-                      },
-                    ]
-                  : [];
-              }
-            "
+        </Form>
+      </Tabs.TabPane>
+      <Tabs.TabPane key="query" tab="查询条件">
+        <div class="mb-4 rounded-md border border-border p-3">
+          <div class="mb-2 text-sm font-medium">数据范围（用户不可见）</div>
+          <FilterGroupEditor
+            v-model:model-value="dataScope"
+            :field-options="fieldOptions"
           />
         </div>
-      </div>
-
-      <div class="mb-2 mt-6 text-sm font-medium">按钮</div>
-      <div class="space-y-2">
-        <div
-          v-for="action in report.actions"
-          :key="action.key"
-          class="grid items-center gap-2 rounded-md border border-border p-2 md:grid-cols-6"
-        >
-          <Input v-model:value="action.label" placeholder="标题" />
-          <Select
-            v-model:value="action.scene"
-            :options="[
-              { label: '工具栏', value: 'toolbar' },
-              { label: '行', value: 'row' },
-              { label: '批量', value: 'batch' },
-            ]"
-            class="w-full"
-          />
-          <Select
-            v-model:value="action.kind"
-            :options="[
-              { label: '新增', value: 'create' },
-              { label: '编辑', value: 'update' },
-              { label: '详情', value: 'detail' },
-              { label: '删除', value: 'delete' },
-              { label: '自定义', value: 'custom' },
-            ]"
-            class="w-full"
-          />
-          <Select
-            v-model:value="action.open"
-            :options="[
-              { label: '抽屉', value: 'drawer' },
-              { label: '弹窗', value: 'modal' },
-              { label: '无表单', value: 'none' },
-            ]"
-            class="w-full"
-          />
-          <Select
-            v-model:value="action.fieldsMode"
-            :options="[
-              { label: '多字段表单', value: 'full' },
-              { label: '指定字段', value: 'whitelist' },
-            ]"
-            class="w-full"
-          />
-          <Input
-            :value="(action.fields || []).join(',')"
-            placeholder="单列字段，逗号分隔"
-            @update:value="
-              (v) => {
-                action.fields = String(v || '')
-                  .split(',')
-                  .map((x) => x.trim())
-                  .filter(Boolean);
-              }
-            "
-          />
+        <SearchFieldList
+          v-model:model-value="searchFields"
+          :columns="report.columns"
+        />
+        <div class="mt-4 flex items-center gap-2 text-sm">
+          允许「更多条件」
+          <Switch v-model:checked="report.advancedFilter" />
         </div>
-      </div>
-    </Form>
+      </Tabs.TabPane>
+      <Tabs.TabPane key="columns" tab="列表列">
+        <ColumnDisplayEditor
+          v-model:model-value="columnsModel"
+          v-model:dictionaries="dictionariesModel"
+        />
+      </Tabs.TabPane>
+      <Tabs.TabPane key="dicts" tab="通用字典">
+        <DictCatalogEditor v-model:model-value="dictionariesModel" />
+      </Tabs.TabPane>
+      <Tabs.TabPane key="actions" tab="按钮">
+        <div class="mb-4 flex items-center gap-2 text-sm">
+          列表显示勾选框
+          <Switch v-model:checked="report.selectionEnabled" />
+          <span class="text-xs text-muted-foreground">
+            控制表格左侧是否出现多选框；与单个按钮是否支持多选无关。
+          </span>
+        </div>
+        <ActionListEditor
+          v-model:model-value="actionsModel"
+          :columns="report.columns"
+        />
+      </Tabs.TabPane>
+      <Tabs.TabPane key="form" tab="表单（可迁表单库）">
+        <FormLayoutDesigner
+          v-model:model-value="formModel"
+          :columns="report.columns"
+          :resource-code="report.resourceCode"
+          :code-prefix="report.code || report.resourceCode"
+        />
+      </Tabs.TabPane>
+      <Tabs.TabPane key="basic" tab="基本信息">
+        <Form class="max-w-xl" layout="vertical">
+          <Form.Item label="名称">
+            <Input v-model:value="report.name" />
+          </Form.Item>
+          <Form.Item label="说明">
+            <Input v-model:value="report.description" />
+          </Form.Item>
+          <Form.Item label="默认排序">
+            <Input v-model:value="report.defaultSorting" class="font-mono" />
+          </Form.Item>
+          <Form.Item label="分页大小">
+            <InputNumber v-model:value="report.pageSize" :max="200" :min="1" />
+          </Form.Item>
+        </Form>
+      </Tabs.TabPane>
+    </Tabs>
   </Page>
 </template>

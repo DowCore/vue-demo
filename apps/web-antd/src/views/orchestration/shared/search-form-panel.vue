@@ -25,23 +25,23 @@ function setField(key: string, value: unknown) {
   values.value = { ...values.value, [key]: value };
 }
 
-function rangeValue(key: string): [unknown, unknown] {
+function rangeTuple(key: string): [string, string] | undefined {
   const raw = values.value[key];
-  return Array.isArray(raw) ? [raw[0], raw[1]] : [undefined, undefined];
+  if (!Array.isArray(raw) || (!raw[0] && !raw[1])) return undefined;
+  return [String(raw[0] || ''), String(raw[1] || '')];
 }
 
 function rangeNumber(key: string, index: 0 | 1): number | undefined {
-  const raw = rangeValue(key)[index];
-  return typeof raw === 'number' ? raw : undefined;
-}
-
-function rangeDate(key: string, index: 0 | 1): string | undefined {
-  const raw = rangeValue(key)[index];
-  return typeof raw === 'string' && raw ? raw : undefined;
+  const raw = values.value[key];
+  const item = Array.isArray(raw) ? raw[index] : undefined;
+  return typeof item === 'number' ? item : undefined;
 }
 
 function setRange(key: string, index: 0 | 1, value: unknown) {
-  const next = [...rangeValue(key)] as [unknown, unknown];
+  const raw = values.value[key];
+  const next: [unknown, unknown] = Array.isArray(raw)
+    ? [raw[0], raw[1]]
+    : [undefined, undefined];
   next[index] = value;
   setField(key, next);
 }
@@ -83,29 +83,26 @@ function setRange(key: string, index: 0 | 1, value: unknown) {
           @update:value="(v) => setRange(field.key, 1, v)"
         />
       </div>
-      <div
+      <DatePicker.RangePicker
         v-else-if="field.control === 'dateRange'"
-        class="flex items-center gap-1"
-      >
-        <DatePicker
-          :value="rangeDate(field.key, 0)"
-          class="w-full"
-          value-format="YYYY-MM-DD"
-          @update:value="(v) => setRange(field.key, 0, v || '')"
-        />
-        <span class="text-muted-foreground">~</span>
-        <DatePicker
-          :value="rangeDate(field.key, 1)"
-          class="w-full"
-          value-format="YYYY-MM-DD"
-          @update:value="(v) => setRange(field.key, 1, v || '')"
-        />
-      </div>
+        :value="rangeTuple(field.key)"
+        class="w-full"
+        value-format="YYYY-MM-DD"
+        @update:value="(v) => setField(field.key, v || [])"
+      />
+      <DatePicker.RangePicker
+        v-else-if="field.control === 'datetimeRange'"
+        :value="rangeTuple(field.key)"
+        class="w-full"
+        show-time
+        value-format="YYYY-MM-DD HH:mm:ss"
+        @update:value="(v) => setField(field.key, v || [])"
+      />
       <InputNumber
         v-else-if="field.control === 'number'"
+        :placeholder="field.placeholder"
         :value="Number(values[field.key] ?? '') || undefined"
         class="w-full"
-        :placeholder="field.placeholder"
         @update:value="(v) => setField(field.key, v)"
       />
       <DatePicker

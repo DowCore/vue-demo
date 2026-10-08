@@ -163,6 +163,13 @@ onMounted(load);
         </template>
         <template v-else-if="column.key === 'table'">
           <span class="font-mono text-xs">
+            {{
+              (record as AppResource).sourceKind === 'view'
+                ? '视图'
+                : (record as AppResource).sourceKind === 'procedure'
+                  ? '过程'
+                  : '表'
+            }}
             {{ (record as AppResource).dataSourceCode }}.{{
               (record as AppResource).tableName
             }}

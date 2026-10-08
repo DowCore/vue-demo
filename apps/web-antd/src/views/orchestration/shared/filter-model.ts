@@ -139,6 +139,7 @@ function rangeToRule(
 export function searchFormToFilter(
   fields: SearchFormFieldDef[],
   values: Record<string, unknown>,
+  combine?: string,
 ): FilterNode | undefined {
   const andChildren: FilterNode[] = [];
   const orBuckets = new Map<string, FilterNode[]>();
@@ -149,6 +150,7 @@ export function searchFormToFilter(
     let rule: FilterNode | undefined;
     if (
       control === 'dateRange' ||
+      control === 'datetimeRange' ||
       control === 'numberRange' ||
       field.op === 'between'
     ) {
@@ -183,7 +185,8 @@ export function searchFormToFilter(
     else andChildren.push({ kind: 'group', op: 'or', children: bucket });
   }
 
-  return pruneFilter({ kind: 'group', op: 'and', children: andChildren });
+  const op = combine === 'or' ? 'or' : 'and';
+  return pruneFilter({ kind: 'group', op, children: andChildren });
 }
 
 export function ensureGroup(node?: FilterNode | null): FilterNode {
@@ -198,4 +201,53 @@ export function ensureGroup(node?: FilterNode | null): FilterNode {
     return { kind: 'group', op: 'and', children: [node] };
   }
   return emptyGroup();
+}
+
+export const QUERY_MODES = [
+  { value: 'contains', label: '模糊搜索', control: 'input', op: 'contains' },
+  { value: 'eq', label: '精确等于', control: 'input', op: 'eq' },
+  {
+    value: 'dateRange',
+    label: '日期范围',
+    control: 'dateRange',
+    op: 'between',
+  },
+  {
+    value: 'datetimeRange',
+    label: '时间范围',
+    control: 'datetimeRange',
+    op: 'between',
+  },
+  {
+    value: 'numberRange',
+    label: '数值范围',
+    control: 'numberRange',
+    op: 'between',
+  },
+  { value: 'switch', label: '是 / 否', control: 'switch', op: 'eq' },
+] as const;
+
+export function queryModeOf(field: SearchFormFieldDef): string {
+  const control = field.control || 'input';
+  if (control === 'dateRange' || control === 'datetimeRange') return control;
+  if (control === 'numberRange') return 'numberRange';
+  if (control === 'switch') return 'switch';
+  if ((field.op || '').toLowerCase() === 'eq') return 'eq';
+  return 'contains';
+}
+
+export function applyQueryMode(field: SearchFormFieldDef, mode: string) {
+  const found = QUERY_MODES.find((m) => m.value === mode);
+  if (!found) return;
+  field.control = found.control;
+  field.op = found.op;
+}
+
+export function queryModeFromPreset(formatPreset?: string): string {
+  const p = (formatPreset || '').toLowerCase();
+  if (p === 'datetime') return 'datetimeRange';
+  if (p === 'date') return 'dateRange';
+  if (p === 'number' || p === 'currency') return 'numberRange';
+  if (p === 'boolean') return 'switch';
+  return 'contains';
 }

@@ -133,7 +133,18 @@ function isGroup(node: FilterNode) {
           v-else
           class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background p-2"
         >
+          <Input
+            v-if="!fieldOptions.length"
+            :value="child.left"
+            class="min-w-36 flex-1 font-mono"
+            placeholder="字段名"
+            size="small"
+            @update:value="
+              (v) => updateAt(index, { ...child, left: String(v || '') })
+            "
+          />
           <Select
+            v-else
             :options="fieldOptions"
             :value="child.left"
             class="min-w-36 flex-1"

@@ -2,30 +2,16 @@
 import type {
   ActionDef,
   AppResource,
-  FormFieldDef,
   ListColumnDef,
 } from '#/api/saas/orchestration';
 import type { FilterNode } from '#/views/orchestration/shared/filter-model';
 
-import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { computed, onActivated, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 
-import {
-  Button,
-  DatePicker,
-  Drawer,
-  Form,
-  Input,
-  InputNumber,
-  message,
-  Modal,
-  Space,
-  Switch,
-  Table,
-  Tag,
-} from 'ant-design-vue';
+import { Button, Drawer, message, Modal, Space, Table } from 'ant-design-vue';
 
 import {
   createAppResourceRecordApi,
@@ -42,18 +28,34 @@ import {
   pruneFilter,
   searchFormToFilter,
 } from '#/views/orchestration/shared/filter-model';
+import { validateFormFields } from '#/views/orchestration/shared/form-validation';
 import {
-  formatCellValue,
+  estimateTableScrollX,
+  formatCellDisplay,
   pickRecordValue,
-  resolveTone,
-  toDatePickerValue,
-  toneClass,
 } from '#/views/orchestration/shared/format-cell';
+import FormattedCell from '#/views/orchestration/shared/formatted-cell.vue';
+import {
+  actionFormKey,
+  actionPlacement,
+  actionSupportsMultiSelect,
+  formOverlayHost,
+  formPagePath,
+  migrateActions,
+  resolveActionOpen,
+} from '#/views/orchestration/shared/open-action';
+import RecordFormOverlay from '#/views/orchestration/shared/record-form-overlay.vue';
+import {
+  buildActionLogicPayload,
+  invokeActionFlow,
+  isDirectFlowAction,
+} from '#/views/orchestration/shared/run-action-flow';
 import SearchFormPanel from '#/views/orchestration/shared/search-form-panel.vue';
 
 defineOptions({ name: 'AppResourceRuntime' });
 
 const route = useRoute();
+const router = useRouter();
 const loading = ref(false);
 const saving = ref(false);
 const resource = ref<AppResource | null>(null);
@@ -67,6 +69,7 @@ const advancedOpen = ref(false);
 const advancedGroup = ref<FilterNode>(emptyGroup());
 const activePreset = ref('');
 const drawerOpen = ref(false);
+const formHost = ref<'drawer' | 'modal'>('drawer');
 const formMode = ref<'create' | 'detail' | 'update'>('create');
 const formRecord = ref<Record<string, unknown>>({});
 const editingId = ref('');
@@ -90,19 +93,19 @@ const visibleColumns = computed(() =>
 
 const toolbarActions = computed(() =>
   (resource.value?.listView.actions || []).filter(
-    (a) => (a.scene || a.position) === 'toolbar',
+    (a) => actionPlacement(a) === 'toolbar' && !actionSupportsMultiSelect(a),
   ),
 );
 
 const rowActions = computed(() =>
   (resource.value?.listView.actions || []).filter(
-    (a) => (a.scene || a.position) === 'row',
+    (a) => actionPlacement(a) === 'row',
   ),
 );
 
 const batchActions = computed(() => {
-  const listed = (resource.value?.listView.actions || []).filter(
-    (a) => (a.scene || a.position) === 'batch',
+  const listed = (resource.value?.listView.actions || []).filter((a) =>
+    actionSupportsMultiSelect(a),
   );
   if (listed.length > 0) return listed;
   if (rowActions.value.some((a) => a.kind === 'delete')) {
@@ -110,11 +113,12 @@ const batchActions = computed(() => {
       {
         key: 'batchDelete',
         label: '批量删除',
-        position: 'batch',
-        scene: 'batch',
+        position: 'toolbar',
+        scene: 'toolbar',
         kind: 'delete',
         confirmText: '删除选中的记录？',
         batchLimit: 100,
+        multiSelect: true,
       } as ActionDef,
     ];
   }
@@ -131,24 +135,49 @@ const tableColumns = computed(() => {
     width: c.width,
     align: (c.align as 'center' | 'left' | 'right') || 'left',
     sorter: !!c.sortable,
+    ellipsis: !!c.ellipsis,
+    fixed:
+      c.fixed === 'left' || c.fixed === 'right'
+        ? (c.fixed as 'left' | 'right')
+        : undefined,
     customRender: ({ record }: { record: Record<string, unknown> }) =>
-      formatCellValue(
+      formatCellDisplay(
         pickRecordValue(record, c.field),
-        c.formatPreset,
-        c.dictMap,
+        c,
+        record,
+        dictionaries.value,
       ),
   }));
-  cols.push({
-    title: '操作',
-    dataIndex: '_actions',
-    key: 'actions',
-    width: Math.min(80 + rowActions.value.length * 56, 280),
-    align: 'left',
-    sorter: false,
-    customRender: (_args: { record: Record<string, unknown> }) => '',
-  });
+  if (rowActions.value.length > 0) {
+    cols.push({
+      title: '操作',
+      dataIndex: '_actions',
+      key: 'actions',
+      width: Math.min(88 + rowActions.value.length * 52, 280),
+      align: 'left' as const,
+      sorter: false,
+      ellipsis: false,
+      fixed: 'right' as const,
+      customRender: (_args: { record: Record<string, unknown> }) => '',
+    });
+  }
   return cols;
 });
+
+const tableScrollX = computed(() =>
+  estimateTableScrollX(
+    visibleColumns.value,
+    rowActions.value.length > 0
+      ? Math.min(88 + rowActions.value.length * 52, 280)
+      : 0,
+  ),
+);
+
+const dictionaries = computed(
+  () => resource.value?.listView.dictionaries || [],
+);
+
+const formTitle = computed(() => modeTitle(formMode.value));
 
 const visibleFields = computed(() => {
   const fields = resource.value?.form.fields || [];
@@ -166,36 +195,23 @@ const visibleFields = computed(() => {
   });
 });
 
-function isReadonly(field: FormFieldDef) {
-  if (formMode.value === 'detail') return true;
-  if (formMode.value === 'create') return !!field.readonlyOnCreate;
-  return !!field.readonlyOnUpdate;
-}
-
-function isRequired(field: FormFieldDef) {
-  if (formMode.value === 'create') return !!field.requiredOnCreate;
-  if (formMode.value === 'update') return !!field.requiredOnUpdate;
-  return false;
-}
-
 function rowId(row: Record<string, unknown>) {
   return String(pickRecordValue(row, 'Id') ?? pickRecordValue(row, 'id') ?? '');
 }
 
-function columnOf(key: string): ListColumnDef | undefined {
-  return visibleColumns.value.find((c) => c.field === key);
+function modeTitle(mode: string) {
+  if (mode === 'create') return '新增';
+  if (mode === 'update') return '编辑';
+  return '详情';
 }
 
-function cellTone(
-  column: ListColumnDef | undefined,
-  record: Record<string, unknown>,
-) {
-  if (!column) return '';
-  return resolveTone(
-    pickRecordValue(record, column.field),
-    column.styleRules,
-    'cell',
-  );
+function formRecordId(formKey: string, row?: Record<string, unknown>) {
+  if (formKey === 'create' || !row) return undefined;
+  return rowId(row);
+}
+
+function columnOf(key: string): ListColumnDef | undefined {
+  return visibleColumns.value.find((c) => c.field === key);
 }
 
 function summaryText(col: ListColumnDef | undefined) {
@@ -205,7 +221,7 @@ function summaryText(col: ListColumnDef | undefined) {
   const fn = col.summaryFn || 'sum';
   const raw = slot[fn] ?? slot.sum ?? slot.count;
   if (raw === undefined || raw === null) return '';
-  return `${fn.toUpperCase()} ${formatCellValue(raw, col.formatPreset, col.dictMap)}`;
+  return `${fn.toUpperCase()} ${formatCellDisplay(raw, col, {}, dictionaries.value)}`;
 }
 
 function currentFilter(): FilterNode | undefined {
@@ -223,6 +239,10 @@ function currentFilter(): FilterNode | undefined {
 
 async function loadResource() {
   resource.value = await getPublishedAppResourceApi(code.value);
+  resource.value.listView.actions = migrateActions(
+    resource.value.listView.actions,
+  );
+  resource.value.listView.dictionaries ??= [];
   page.pageSize = resource.value.listView.pageSize || 20;
   sorting.value = resource.value.listView.defaultSorting || '';
   searchValues.value = {};
@@ -273,12 +293,29 @@ function resetQuery() {
   runQuery();
 }
 
-function openCreate() {
+function openFormPage(action: ActionDef, row?: Record<string, unknown>) {
+  const formKey = actionFormKey(action);
+  router.push(
+    formPagePath({
+      source: 'resource',
+      code: code.value,
+      formKey,
+      id: formRecordId(formKey, row),
+    }),
+  );
+}
+
+function openCreate(action?: ActionDef) {
+  if (action && resolveActionOpen(action) === 'page') {
+    openFormPage(action);
+    return;
+  }
   formMode.value = 'create';
   editingId.value = '';
   concurrencyStamp.value = '';
   formRecord.value = {};
   whitelistFields.value = null;
+  formHost.value = formOverlayHost(action);
   drawerOpen.value = true;
 }
 
@@ -308,24 +345,43 @@ async function openEdit(
   );
   whitelistFields.value =
     action?.fieldsMode === 'whitelist' ? action.fields || [] : null;
+  formHost.value = formOverlayHost(action);
   drawerOpen.value = true;
 }
 
 async function runRowAction(action: ActionDef, row: Record<string, unknown>) {
-  const kind = action.kind;
-  if (kind === 'create') {
-    openCreate();
+  if (action.kind === 'create') {
+    openCreate(action);
     return;
   }
-  if (kind === 'update' || kind === 'detail') {
-    await openEdit(row, kind === 'detail' ? 'detail' : 'update', action);
-    return;
-  }
-  if (kind === 'delete') {
+  if (action.kind === 'delete') {
     confirmDelete(row, action);
     return;
   }
-  if (action.open === 'drawer' || action.open === 'modal') {
+  if (isDirectFlowAction(action)) {
+    const id = rowId(row);
+    await invokeActionFlow(
+      action,
+      buildActionLogicPayload({
+        action,
+        resourceCode: resource.value?.code,
+        row,
+        ids: id ? [id] : undefined,
+      }),
+      { onRefresh: loadRows },
+    );
+    return;
+  }
+  const open = resolveActionOpen(action);
+  if (open === 'page') {
+    openFormPage(action, row);
+    return;
+  }
+  if (action.kind === 'update' || action.kind === 'detail') {
+    await openEdit(row, action.kind === 'detail' ? 'detail' : 'update', action);
+    return;
+  }
+  if (open === 'drawer' || open === 'modal') {
     await openEdit(
       row,
       action.formMode === 'detail' ? 'detail' : 'update',
@@ -333,18 +389,33 @@ async function runRowAction(action: ActionDef, row: Record<string, unknown>) {
     );
     return;
   }
-  message.info(`按钮「${action.label}」需绑定弹窗或删除/编辑类型`);
+  message.info(`按钮「${action.label}」需绑定新标签页、弹窗或删除/编辑类型`);
 }
 
-function runToolbarAction(action: ActionDef) {
+async function runToolbarAction(action: ActionDef) {
   if (action.kind === 'create' || action.key === 'create') {
-    openCreate();
+    openCreate(action);
+    return;
+  }
+  if (isDirectFlowAction(action)) {
+    await invokeActionFlow(
+      action,
+      buildActionLogicPayload({
+        action,
+        resourceCode: resource.value?.code,
+      }),
+      { onRefresh: loadRows },
+    );
+    return;
+  }
+  if (resolveActionOpen(action) === 'page') {
+    openFormPage(action);
     return;
   }
   message.info(`工具栏按钮「${action.label}」暂未配置功能`);
 }
 
-function runBatchAction(action: ActionDef) {
+async function runBatchAction(action: ActionDef) {
   const code = resource.value?.code;
   if (!code) return;
   if (selectedIds.value.length === 0) {
@@ -366,11 +437,39 @@ function runBatchAction(action: ActionDef) {
     });
     return;
   }
-  message.info('自定义批量操作请绑定 flowKey 后在后续版本执行');
+  if (isDirectFlowAction(action) || action.kind === 'custom') {
+    const limit = action.batchLimit || 100;
+    const ids = selectedIds.value.slice(0, limit);
+    const selectedRows = rows.value.filter((r) => ids.includes(rowId(r)));
+    const ok = await invokeActionFlow(
+      action,
+      buildActionLogicPayload({
+        action,
+        resourceCode: code,
+        ids,
+        rows: selectedRows,
+      }),
+      { onRefresh: loadRows },
+    );
+    if (ok) selectedIds.value = [];
+    return;
+  }
+  message.info(`批量按钮「${action.label}」请绑定 flowKey`);
 }
 
 async function submitForm() {
   if (!resource.value) return;
+  if (formMode.value !== 'detail') {
+    const err = validateFormFields(
+      visibleFields.value,
+      formRecord.value,
+      formMode.value,
+    );
+    if (err) {
+      message.warning(err);
+      return;
+    }
+  }
   saving.value = true;
   try {
     if (formMode.value === 'create') {
@@ -445,6 +544,10 @@ onMounted(async () => {
   await loadResource();
   await loadRows();
 });
+
+onActivated(() => {
+  if (resource.value) loadRows();
+});
 </script>
 
 <template>
@@ -505,6 +608,7 @@ onMounted(async () => {
       :columns="tableColumns"
       :data-source="rows"
       :loading="loading"
+      :scroll="{ x: tableScrollX }"
       :pagination="{
         current: page.current,
         pageSize: page.pageSize,
@@ -529,7 +633,7 @@ onMounted(async () => {
       "
       @change="onTableChange"
     >
-      <template #bodyCell="{ column, record, text }">
+      <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'actions'">
           <Space>
             <Button
@@ -544,39 +648,12 @@ onMounted(async () => {
             </Button>
           </Space>
         </template>
-        <template v-else>
-          <Tag
-            v-if="columnOf(String(column.key))?.render === 'tag'"
-            :color="
-              cellTone(
-                columnOf(String(column.key)),
-                record as Record<string, unknown>,
-              ) === 'danger'
-                ? 'error'
-                : cellTone(
-                      columnOf(String(column.key)),
-                      record as Record<string, unknown>,
-                    ) === 'success'
-                  ? 'success'
-                  : 'default'
-            "
-          >
-            {{ text }}
-          </Tag>
-          <span
-            v-else
-            :class="
-              toneClass(
-                cellTone(
-                  columnOf(String(column.key)),
-                  record as Record<string, unknown>,
-                ),
-              )
-            "
-          >
-            {{ text }}
-          </span>
-        </template>
+        <FormattedCell
+          v-else-if="columnOf(String(column.key))"
+          :column="columnOf(String(column.key))!"
+          :dictionaries="dictionaries"
+          :record="record as Record<string, unknown>"
+        />
       </template>
       <template v-if="Object.keys(summary).length" #summary>
         <Table.Summary.Row>
@@ -635,70 +712,15 @@ onMounted(async () => {
       </div>
     </Drawer>
 
-    <Drawer
+    <RecordFormOverlay
+      v-model:model-value="formRecord"
       v-model:open="drawerOpen"
-      :title="
-        formMode === 'create' ? '新增' : formMode === 'update' ? '编辑' : '详情'
-      "
-      width="520"
-    >
-      <Form layout="vertical">
-        <Form.Item
-          v-for="field in visibleFields"
-          :key="field.field"
-          :label="field.title || field.field"
-          :required="isRequired(field)"
-        >
-          <Switch
-            v-if="field.control === 'switch'"
-            :checked="!!formRecord[field.field]"
-            :disabled="isReadonly(field)"
-            @update:checked="(v) => (formRecord[field.field] = v)"
-          />
-          <InputNumber
-            v-else-if="field.control === 'number'"
-            :disabled="isReadonly(field)"
-            :value="Number(formRecord[field.field] ?? 0)"
-            class="w-full"
-            @update:value="(v) => (formRecord[field.field] = v)"
-          />
-          <DatePicker
-            v-else-if="field.control === 'date'"
-            :disabled="isReadonly(field)"
-            :value="toDatePickerValue(formRecord[field.field], 'date')"
-            class="w-full"
-            value-format="YYYY-MM-DD"
-            @update:value="(v) => (formRecord[field.field] = v || '')"
-          />
-          <DatePicker
-            v-else-if="field.control === 'datetime'"
-            :disabled="isReadonly(field)"
-            :value="toDatePickerValue(formRecord[field.field], 'datetime')"
-            class="w-full"
-            show-time
-            value-format="YYYY-MM-DD HH:mm:ss"
-            @update:value="(v) => (formRecord[field.field] = v || '')"
-          />
-          <Input.TextArea
-            v-else-if="field.control === 'textarea'"
-            :disabled="isReadonly(field)"
-            :value="String(formRecord[field.field] ?? '')"
-            :rows="3"
-            @update:value="(v) => (formRecord[field.field] = v)"
-          />
-          <Input
-            v-else
-            :disabled="isReadonly(field)"
-            :value="String(formRecord[field.field] ?? '')"
-            @update:value="(v) => (formRecord[field.field] = v)"
-          />
-        </Form.Item>
-      </Form>
-      <div v-if="formMode !== 'detail'" class="mt-4 flex justify-end">
-        <Button :loading="saving" type="primary" @click="submitForm">
-          提交
-        </Button>
-      </div>
-    </Drawer>
+      :fields="visibleFields"
+      :host="formHost"
+      :mode="formMode"
+      :saving="saving"
+      :title="formTitle"
+      @submit="submitForm"
+    />
   </Page>
 </template>

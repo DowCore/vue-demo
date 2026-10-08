@@ -128,6 +128,27 @@ export function createFlowDefinitionApi(data: {
   );
 }
 
+export function getFlowDefinitionByCodeApi(code: string) {
+  return requestClient.get<FlowDefinition>(
+    `/api/orchestration/definitions/by-code/${encodeURIComponent(code)}`,
+  );
+}
+
+/** 从系统流/已有流另存为可编辑自定义逻辑 */
+export function cloneFlowAsCustomApi(data: {
+  sourceCode: string;
+  newCode: string;
+  newName: string;
+  category?: string;
+  isReusable?: boolean;
+  publish?: boolean;
+}) {
+  return requestClient.post<FlowDefinition>(
+    '/api/orchestration/definitions/clone-as-custom',
+    data,
+  );
+}
+
 export function updateFlowDefinitionApi(
   id: string,
   data: {
@@ -619,6 +640,43 @@ export interface TableDefinition {
   creationTime?: string;
 }
 
+export interface QueryObjectParameter {
+  name: string;
+  displayName: string;
+  platformType: string;
+  direction: string;
+  ordinal: number;
+  nullable: boolean;
+  hasDefault?: boolean;
+}
+
+export interface DbQueryObject {
+  id: string;
+  dataSourceCode: string;
+  kind: string;
+  objectName: string;
+  displayName: string;
+  routineKind: string;
+  canSelectFrom: boolean;
+  comment?: string;
+  importWarning?: string;
+  lastImportedAt?: string;
+  /** 已绑定应用资源，有值时可直接打开设计器 */
+  boundResourceId?: string;
+  columns: TableColumn[];
+  parameters: QueryObjectParameter[];
+  creationTime?: string;
+}
+
+export interface QueryObjectCatalogItem {
+  objectName: string;
+  displayName: string;
+  kind: string;
+  routineKind: string;
+  canSelectFrom: boolean;
+  imported: boolean;
+}
+
 export interface DdlPreviewItem {
   kind: string;
   sql: string;
@@ -656,6 +714,7 @@ export interface SearchFormFieldDef {
 
 export interface SearchFormDef {
   columns?: number;
+  combine?: string;
   fields: SearchFormFieldDef[];
 }
 
@@ -681,16 +740,38 @@ export interface ColumnStyleRule {
   target?: string;
 }
 
+export interface DictOption {
+  value: string;
+  label: string;
+  tone?: string;
+}
+
+export interface NamedDict {
+  code: string;
+  name: string;
+  options: DictOption[];
+}
+
 export interface ListColumnDef {
   field: string;
   title: string;
+  /** 列宽 px；空则自适应 */
   width?: number;
   sortable?: boolean;
   visible?: boolean;
   formatPreset?: string;
+  /** left / center / right */
   align?: string;
+  /** 超长省略 */
+  ellipsis?: boolean;
+  /** 空 / left / right */
+  fixed?: string;
   render?: string;
   dictMap?: Record<string, string>;
+  options?: DictOption[];
+  dictCode?: string;
+  formatFn?: string;
+  renderFn?: string;
   styleRules?: ColumnStyleRule[];
   summaryFn?: string;
   summaryScope?: string;
@@ -705,12 +786,20 @@ export interface ActionDef {
   kind: string;
   flowKey?: string;
   open?: string;
+  fixed?: string;
+  formKey?: string;
   formMode?: string;
   fieldsMode?: string;
   fields?: string[];
+  /** 执行流时从行数据抽取的字段；空则整行 */
+  payloadFields?: string[];
+  /** refresh | close | none */
+  after?: string;
   confirm?: boolean;
   confirmText?: string;
   batchLimit?: number;
+  description?: string;
+  multiSelect?: boolean;
 }
 
 export interface ListViewDef {
@@ -718,12 +807,56 @@ export interface ListViewDef {
   defaultSorting?: string;
   pageSize?: number;
   actions: ActionDef[];
+  dictionaries?: NamedDict[];
+}
+
+export interface FormFieldRuleDef {
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  patternMessage?: string;
+  min?: number;
+  max?: number;
+  message?: string;
 }
 
 export interface FormFieldDef {
   field: string;
   title: string;
   control: string;
+  span?: number;
+  placeholder?: string;
+  visibleOnCreate?: boolean;
+  visibleOnUpdate?: boolean;
+  visibleOnDetail?: boolean;
+  readonlyOnCreate?: boolean;
+  readonlyOnUpdate?: boolean;
+  requiredOnCreate?: boolean;
+  requiredOnUpdate?: boolean;
+  rules?: FormFieldRuleDef;
+  /** 明细列 / 子字段（table、list、tree） */
+  children?: FormFieldDef[];
+  minItems?: number;
+  maxItems?: number;
+  /** tree 子节点字段名，默认 children */
+  treeChildrenField?: string;
+}
+
+/** 容器优先的布局节点（对标 VForm widget） */
+export interface FormWidgetDef {
+  id: string;
+  /** container | field */
+  kind: 'container' | 'field' | string;
+  /** grid | card | data-table | subform */
+  container?: string;
+  columns?: number;
+  title?: string;
+  hidden?: boolean;
+  children?: FormWidgetDef[];
+  field?: string;
+  control?: string;
+  span?: number;
+  placeholder?: string;
   visibleOnCreate?: boolean;
   visibleOnUpdate?: boolean;
   visibleOnDetail?: boolean;
@@ -735,6 +868,12 @@ export interface FormFieldDef {
 
 export interface FormDef {
   fields: FormFieldDef[];
+  /** 容器树；无 vformJson 时使用 */
+  layout?: FormWidgetDef[];
+  /** VForm3 widgetList + formConfig */
+  vformJson?: string;
+  /** 可选：提交走逻辑编排 */
+  submitFlowKey?: string;
 }
 
 export interface AppResource {
@@ -743,6 +882,8 @@ export interface AppResource {
   name: string;
   dataSourceCode: string;
   tableName: string;
+  sourceKind?: string;
+  queryObjectId?: string;
   titleField: string;
   status: number;
   queryFlowKey: string;
@@ -779,6 +920,8 @@ export interface ReportDefinition {
   name: string;
   kind: string;
   resourceCode?: string;
+  dataSourceCode?: string;
+  tableName?: string;
   queryFlowKey: string;
   status: number;
   dataScope?: FilterNode;
@@ -788,6 +931,8 @@ export interface ReportDefinition {
   kpis?: Array<{ title: string; field: string; fn: string }>;
   columns: ListColumnDef[];
   actions: ActionDef[];
+  form?: FormDef;
+  dictionaries?: NamedDict[];
   defaultSorting?: string;
   pageSize?: number;
   selectionEnabled?: boolean;
@@ -856,6 +1001,82 @@ export function createAppResourceFromTableApi(
 ) {
   return requestClient.post<AppResource>(
     `/api/orchestration/tables/${tableId}/resources`,
+    data,
+  );
+}
+
+export function getDbQueryObjectsApi(params?: {
+  dataSourceCode?: string;
+  kind?: string;
+  filter?: string;
+  maxResultCount?: number;
+  skipCount?: number;
+}) {
+  return requestClient.get<OrchestrationPagedResult<DbQueryObject>>(
+    '/api/orchestration/query-objects',
+    { params },
+  );
+}
+
+export function getDbQueryObjectApi(id: string) {
+  return requestClient.get<DbQueryObject>(
+    `/api/orchestration/query-objects/${id}`,
+  );
+}
+
+export function getQueryObjectCatalogApi(params: {
+  dataSourceCode: string;
+  kind: string;
+  /** 对象名模糊搜索 */
+  filter?: string;
+  keyword?: string;
+  skipCount?: number;
+  maxResultCount?: number;
+}) {
+  const term = (params.keyword || params.filter || '').trim() || undefined;
+  return requestClient.get<OrchestrationPagedResult<QueryObjectCatalogItem>>(
+    '/api/orchestration/query-objects/catalog',
+    {
+      params: {
+        dataSourceCode: params.dataSourceCode,
+        kind: params.kind,
+        filter: term,
+        keyword: term,
+        skipCount: params.skipCount,
+        maxResultCount: params.maxResultCount,
+      },
+    },
+  );
+}
+
+export function importQueryObjectsApi(data: {
+  dataSourceCode: string;
+  kind: string;
+  names: string[];
+}) {
+  return requestClient.post<{
+    items: DbQueryObject[];
+    skipped: string[];
+    errors: string[];
+  }>('/api/orchestration/query-objects/import', data);
+}
+
+export function refreshQueryObjectApi(id: string) {
+  return requestClient.post<DbQueryObject>(
+    `/api/orchestration/query-objects/${id}/refresh`,
+  );
+}
+
+export function deleteQueryObjectApi(id: string) {
+  return requestClient.delete(`/api/orchestration/query-objects/${id}`);
+}
+
+export function createAppResourceFromQueryObjectApi(
+  queryObjectId: string,
+  data: { code: string; name: string },
+) {
+  return requestClient.post<AppResource>(
+    `/api/orchestration/query-objects/${queryObjectId}/resources`,
     data,
   );
 }
@@ -968,6 +1189,208 @@ export function deleteAppResourceRecordApi(code: string, id: string) {
   );
 }
 
+export interface FormDefinition {
+  id: string;
+  code: string;
+  name: string;
+  description?: string;
+  status: number;
+  sourceResourceCode?: string;
+  schema: FormDef;
+  fieldCatalog: ListColumnDef[];
+  creationTime?: string;
+}
+
+export function getFormDefinitionsApi(params?: {
+  filter?: string;
+  status?: number;
+  maxResultCount?: number;
+  skipCount?: number;
+}) {
+  return requestClient.get<OrchestrationPagedResult<FormDefinition>>(
+    '/api/orchestration/forms',
+    { params },
+  );
+}
+
+export function getFormDefinitionApi(id: string) {
+  return requestClient.get<FormDefinition>(`/api/orchestration/forms/${id}`);
+}
+
+export function getPublishedFormDefinitionApi(code: string) {
+  return requestClient.get<FormDefinition>(
+    `/api/orchestration/forms/published/${encodeURIComponent(code)}`,
+  );
+}
+
+export function createFormDefinitionApi(data: {
+  code: string;
+  name: string;
+  description?: string;
+  sourceResourceCode?: string;
+}) {
+  return requestClient.post<FormDefinition>('/api/orchestration/forms', data);
+}
+
+export function updateFormDefinitionApi(
+  id: string,
+  data: {
+    name: string;
+    description?: string;
+    sourceResourceCode?: string;
+    schema: FormDef;
+    fieldCatalog: ListColumnDef[];
+  },
+) {
+  return requestClient.put<FormDefinition>(
+    `/api/orchestration/forms/${id}`,
+    data,
+  );
+}
+
+export function deleteFormDefinitionApi(id: string) {
+  return requestClient.delete(`/api/orchestration/forms/${id}`);
+}
+
+export function publishFormDefinitionApi(id: string) {
+  return requestClient.post<FormDefinition>(
+    `/api/orchestration/forms/${id}/publish`,
+  );
+}
+
+/** 已发布表单下拉（报表 / OA formRef） */
+export function getPublishedFormLookupApi(filter?: string) {
+  return requestClient.get<{ items: FormDefinitionLookup[] }>(
+    '/api/orchestration/forms/published-lookup',
+    { params: { filter } },
+  );
+}
+
+export interface FormDefinitionLookup {
+  id: string;
+  code: string;
+  name: string;
+  fieldCount: number;
+}
+
+export interface WorkflowDefinition {
+  id: string;
+  code: string;
+  name: string;
+  description?: string;
+  status: number;
+  formRef?: string;
+  processJson: string;
+  beforeStartFlowKey?: string;
+  afterEndFlowKey?: string;
+  creationTime?: string;
+}
+
+export function getWorkflowDefinitionsApi(params?: {
+  filter?: string;
+  status?: number;
+  maxResultCount?: number;
+  skipCount?: number;
+}) {
+  return requestClient.get<OrchestrationPagedResult<WorkflowDefinition>>(
+    '/api/orchestration/workflows',
+    { params },
+  );
+}
+
+export function getWorkflowDefinitionApi(id: string) {
+  return requestClient.get<WorkflowDefinition>(
+    `/api/orchestration/workflows/${id}`,
+  );
+}
+
+export function createWorkflowDefinitionApi(data: {
+  code: string;
+  name: string;
+  description?: string;
+  formRef?: string;
+}) {
+  return requestClient.post<WorkflowDefinition>(
+    '/api/orchestration/workflows',
+    data,
+  );
+}
+
+export function updateWorkflowDefinitionApi(
+  id: string,
+  data: {
+    name: string;
+    description?: string;
+    formRef?: string;
+    processJson: string;
+    beforeStartFlowKey?: string;
+    afterEndFlowKey?: string;
+  },
+) {
+  return requestClient.put<WorkflowDefinition>(
+    `/api/orchestration/workflows/${id}`,
+    data,
+  );
+}
+
+export function deleteWorkflowDefinitionApi(id: string) {
+  return requestClient.delete(`/api/orchestration/workflows/${id}`);
+}
+
+export function publishWorkflowDefinitionApi(id: string) {
+  return requestClient.post<WorkflowDefinition>(
+    `/api/orchestration/workflows/${id}/publish`,
+  );
+}
+
+export interface WorkflowTask {
+  id: string;
+  instanceId: string;
+  workflowCode: string;
+  formRef?: string;
+  nodeId: string;
+  nodeName: string;
+  status: string;
+  assigneeUserName?: string;
+  candidateRole?: string;
+  opinion?: string;
+}
+
+export interface WorkflowInstance {
+  id: string;
+  workflowCode: string;
+  formRef?: string;
+  status: string;
+  result?: string;
+  currentNodeId?: string;
+  starterUserName: string;
+  recordJson: string;
+  tasks: WorkflowTask[];
+}
+
+export function startWorkflowApi(data: { code: string; recordJson?: string }) {
+  return requestClient.post<WorkflowInstance>(
+    '/api/orchestration/workflow-runtime/start',
+    data,
+  );
+}
+
+export function getMyWorkflowTasksApi() {
+  return requestClient.get<{ items: WorkflowTask[] }>(
+    '/api/orchestration/workflow-runtime/my-tasks',
+  );
+}
+
+export function completeWorkflowTaskApi(
+  taskId: string,
+  data: { pass: boolean; opinion?: string },
+) {
+  return requestClient.post<WorkflowInstance>(
+    `/api/orchestration/workflow-runtime/tasks/${taskId}/complete`,
+    data,
+  );
+}
+
 export function getReportsApi(params?: {
   filter?: string;
   status?: number;
@@ -997,6 +1420,9 @@ export function createReportApi(data: {
   name: string;
   kind?: string;
   resourceCode?: string;
+  dataSourceCode?: string;
+  tableName?: string;
+  queryFlowKey?: string;
 }) {
   return requestClient.post<ReportDefinition>(
     '/api/orchestration/reports',
@@ -1011,6 +1437,18 @@ export function createReportFromResourceApi(data: {
 }) {
   return requestClient.post<ReportDefinition>(
     '/api/orchestration/reports/from-resource',
+    data,
+  );
+}
+
+export function createReportFromTableApi(data: {
+  dataSourceCode: string;
+  tableName: string;
+  code: string;
+  name: string;
+}) {
+  return requestClient.post<ReportDefinition>(
+    '/api/orchestration/reports/from-table',
     data,
   );
 }
