@@ -295,6 +295,65 @@ function addOption() {
   patchOption('optionItems', items);
 }
 
+function dependencyList() {
+  return [...(selected.value?.options.dependencies || [])];
+}
+
+function writeDependencies(items: Record<string, string>[]) {
+  patchOption('dependencies', items);
+}
+
+function addDependency() {
+  const items = dependencyList();
+  items.push({
+    sourceField: '',
+    op: 'eq',
+    value: '',
+    action: 'show',
+    setValue: '',
+  });
+  writeDependencies(items);
+}
+
+function patchDependency(index: number, key: string, value: string) {
+  const items = dependencyList();
+  const current = items[index];
+  if (!current) return;
+  items[index] = { ...current, [key]: value };
+  writeDependencies(items);
+}
+
+function removeDependency(index: number) {
+  const items = dependencyList();
+  items.splice(index, 1);
+  writeDependencies(items);
+}
+
+function formFieldNames() {
+  const names: string[] = [];
+  const walk = (widgets: VFormWidget[]) => {
+    for (const widget of widgets) {
+      if (widget.formItemFlag && widget.options?.name) {
+        names.push(String(widget.options.name));
+      }
+      if (widget.widgetList) walk(widget.widgetList);
+      for (const col of widget.cols || []) {
+        if (col.widgetList) walk(col.widgetList);
+      }
+      for (const row of widget.rows || []) {
+        for (const cell of row.cols || []) {
+          if (cell.widgetList) walk(cell.widgetList);
+        }
+      }
+      for (const tab of widget.tabs || []) {
+        if (tab.widgetList) walk(tab.widgetList);
+      }
+    }
+  };
+  walk(doc.value.widgetList);
+  return names;
+}
+
 function patchOptionItem(index: number, key: 'label' | 'value', value: string) {
   if (!selected.value) return;
   const items = (selected.value.options.optionItems || []).map(
@@ -1019,6 +1078,107 @@ function saveCode() {
             >
               ×
             </Button>
+          </div>
+        </div>
+        <div v-if="selected.formItemFlag" class="space-y-2">
+          <div class="flex items-center justify-between font-medium">
+            字段联动
+            <Button size="small" type="link" @click="addDependency">
+              添加
+            </Button>
+          </div>
+          <p class="text-muted-foreground">
+            条件成立后显隐、禁用、改必填，或把当前字段写成指定值。
+          </p>
+          <div
+            v-for="(dep, index) in selected.options.dependencies || []"
+            :key="index"
+            class="space-y-1 rounded border border-border p-2"
+          >
+            <Select
+              class="w-full"
+              size="small"
+              show-search
+              placeholder="触发字段"
+              :options="
+                formFieldNames().map((name) => ({ label: name, value: name }))
+              "
+              :value="dep.sourceField || undefined"
+              @update:value="
+                (v) =>
+                  patchDependency(Number(index), 'sourceField', String(v || ''))
+              "
+            />
+            <div class="flex gap-1">
+              <Select
+                class="w-28"
+                size="small"
+                :options="[
+                  { label: '等于', value: 'eq' },
+                  { label: '不等于', value: 'ne' },
+                  { label: '包含', value: 'contains' },
+                  { label: '属于', value: 'in' },
+                  { label: '不属于', value: 'notin' },
+                  { label: '为空', value: 'isEmpty' },
+                  { label: '不为空', value: 'isNotEmpty' },
+                ]"
+                :value="dep.op || 'eq'"
+                @update:value="
+                  (v) => patchDependency(Number(index), 'op', String(v || 'eq'))
+                "
+              />
+              <Input
+                size="small"
+                placeholder="比较值，多个用逗号"
+                :value="dep.value"
+                @update:value="
+                  (v) =>
+                    patchDependency(Number(index), 'value', String(v || ''))
+                "
+              />
+            </div>
+            <div class="flex gap-1">
+              <Select
+                class="flex-1"
+                size="small"
+                :options="[
+                  { label: '显示', value: 'show' },
+                  { label: '隐藏', value: 'hide' },
+                  { label: '启用', value: 'enable' },
+                  { label: '禁用', value: 'disable' },
+                  { label: '必填', value: 'require' },
+                  { label: '选填', value: 'optional' },
+                  { label: '赋值', value: 'setValue' },
+                ]"
+                :value="dep.action || 'show'"
+                @update:value="
+                  (v) =>
+                    patchDependency(
+                      Number(index),
+                      'action',
+                      String(v || 'show'),
+                    )
+                "
+              />
+              <Button
+                danger
+                size="small"
+                type="text"
+                @click="removeDependency(Number(index))"
+              >
+                删
+              </Button>
+            </div>
+            <Input
+              v-if="dep.action === 'setValue'"
+              size="small"
+              placeholder="写入当前字段的值"
+              :value="dep.setValue"
+              @update:value="
+                (v) =>
+                  patchDependency(Number(index), 'setValue', String(v || ''))
+              "
+            />
           </div>
         </div>
         <Button

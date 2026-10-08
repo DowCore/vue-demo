@@ -11,6 +11,7 @@ defineOptions({ name: 'VFormRender' });
 const props = defineProps<{
   json?: string;
   modelValue?: Record<string, unknown>;
+  fieldPermissions?: Record<string, string>;
 }>();
 
 const emit = defineEmits<{
@@ -45,6 +46,7 @@ onMounted(() => {
     <VFormNode
       v-for="widget in doc.widgetList"
       :key="widget.id"
+      :field-permissions="fieldPermissions"
       :label-position="doc.formConfig.labelPosition"
       :label-width="doc.formConfig.labelWidth"
       :model="model"

@@ -820,6 +820,21 @@ export interface FormFieldRuleDef {
   message?: string;
 }
 
+export interface FormFieldDependencyDef {
+  sourceField: string;
+  op?: string;
+  value?: string;
+  action?:
+    | 'disable'
+    | 'enable'
+    | 'hide'
+    | 'optional'
+    | 'require'
+    | 'setValue'
+    | 'show';
+  setValue?: string;
+}
+
 export interface FormFieldDef {
   field: string;
   title: string;
@@ -840,6 +855,8 @@ export interface FormFieldDef {
   maxItems?: number;
   /** tree 子节点字段名，默认 children */
   treeChildrenField?: string;
+  dependencies?: FormFieldDependencyDef[];
+  controlProps?: Record<string, any>;
 }
 
 /** 容器优先的布局节点（对标 VForm widget） */
@@ -864,6 +881,8 @@ export interface FormWidgetDef {
   readonlyOnUpdate?: boolean;
   requiredOnCreate?: boolean;
   requiredOnUpdate?: boolean;
+  dependencies?: FormFieldDependencyDef[];
+  controlProps?: Record<string, any>;
 }
 
 export interface FormDef {
@@ -1354,6 +1373,9 @@ export interface WorkflowTask {
   assigneeUserName?: string;
   candidateRole?: string;
   opinion?: string;
+  fieldPermissions?: Record<string, string>;
+  recordJson?: string;
+  historyJson?: string;
 }
 
 export interface WorkflowInstance {
@@ -1365,6 +1387,8 @@ export interface WorkflowInstance {
   currentNodeId?: string;
   starterUserName: string;
   recordJson: string;
+  processSnapshotJson?: string;
+  historyJson?: string;
   tasks: WorkflowTask[];
 }
 
@@ -1383,7 +1407,19 @@ export function getMyWorkflowTasksApi() {
 
 export function completeWorkflowTaskApi(
   taskId: string,
-  data: { pass: boolean; opinion?: string },
+  data: {
+    pass?: boolean;
+    opinion?: string;
+    action?:
+      | 'approve'
+      | 'reject_terminate'
+      | 'reject_to_prev'
+      | 'reject_to_starter'
+      | 'transfer';
+    transferUserName?: string;
+    targetNodeId?: string;
+    recordPatch?: Record<string, any>;
+  },
 ) {
   return requestClient.post<WorkflowInstance>(
     `/api/orchestration/workflow-runtime/tasks/${taskId}/complete`,

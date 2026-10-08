@@ -1,23 +1,45 @@
 <script lang="ts" setup>
+import type { DeptTreeNode } from './org-options';
+
 /**
  * 表单字段基础控件库（被 FormSchemaRenderer 调用）
  * 设计态 designer=true；运行/预览 designer=false，仅按 FormFieldDef JSON 渲染
  */
 import type { FormFieldDef } from '#/api/saas/orchestration';
 
+import { onMounted, ref, watch } from 'vue';
+
 import { IconifyIcon } from '@vben/icons';
 
 import {
   Button,
+  Cascader,
+  Checkbox,
   DatePicker,
   Input,
   InputNumber,
+  Radio,
+  Rate,
+  Select,
+  Slider,
   Switch,
   Table,
+  TimePicker,
+  TreeSelect,
+  Upload,
 } from 'ant-design-vue';
 
+import {
+  appliedSetValue,
+  isDisabledByDependencies,
+  isEnabledByDependencies,
+  isHiddenByDependencies,
+  isOptionalByDependencies,
+  isRequiredByDependencies,
+} from './form-dependencies';
 import { isFieldRequired } from './form-validation';
 import { toDatePickerValue } from './format-cell';
+import { loadDeptTree, loadUserOptions } from './org-options';
 
 defineOptions({ name: 'RecordFormFields' });
 
@@ -28,10 +50,12 @@ const props = withDefaults(
     modelValue: Record<string, unknown>;
     designer?: boolean;
     selectedField?: string;
+    fieldPermissions?: Record<string, string>;
   }>(),
   {
     designer: false,
     selectedField: '',
+    fieldPermissions: () => ({}),
   },
 );
 
@@ -40,20 +64,91 @@ const emit = defineEmits<{
   'update:modelValue': [value: Record<string, unknown>];
 }>();
 
+const userOptions = ref<{ label: string; value: string }[]>([]);
+const deptTree = ref<DeptTreeNode[]>([]);
+
+onMounted(() => {
+  const controls = new Set(props.fields.map((field) => field.control));
+  if (controls.has('userPicker')) {
+    loadUserOptions().then((items) => {
+      userOptions.value = items;
+    });
+  }
+  if (controls.has('deptPicker')) {
+    loadDeptTree().then((items) => {
+      deptTree.value = items;
+    });
+  }
+});
+
+watch(
+  () => props.modelValue,
+  (model) => {
+    if (props.designer) return;
+    const next = { ...model };
+    let changed = false;
+    for (const field of props.fields) {
+      const value = appliedSetValue(field.dependencies, model);
+      if (value === undefined || next[field.field] === value) continue;
+      next[field.field] = value;
+      changed = true;
+    }
+    if (changed) emit('update:modelValue', next);
+  },
+  { deep: true },
+);
+
 function patch(field: string, value: unknown) {
   emit('update:modelValue', { ...props.modelValue, [field]: value });
 }
 
+function keepUploadName(field: string, file: { name: string }) {
+  patch(field, file.name);
+  return false;
+}
+
+function isDependencyHidden(field: FormFieldDef): boolean {
+  return isHiddenByDependencies(field.dependencies, props.modelValue);
+}
+
+function isDependencyReadonly(field: FormFieldDef): boolean {
+  return isDisabledByDependencies(field.dependencies, props.modelValue);
+}
+
+function isDependencyRequired(field: FormFieldDef): boolean {
+  return isRequiredByDependencies(field.dependencies, props.modelValue);
+}
+
 function isReadonly(field: FormFieldDef) {
+  const perm = props.fieldPermissions?.[field.field];
+  if (perm === 'read') return true;
+  if (perm === 'write' || perm === 'required') return false;
+  if (isEnabledByDependencies(field.dependencies, props.modelValue)) {
+    return false;
+  }
+  if (isDependencyReadonly(field)) return true;
   if (props.mode === 'detail') return true;
   if (props.mode === 'create') return !!field.readonlyOnCreate;
   return !!field.readonlyOnUpdate;
 }
 
 function isVisible(field: FormFieldDef) {
+  const perm = props.fieldPermissions?.[field.field];
+  if (perm === 'hide') return false;
+  if (isDependencyHidden(field)) return false;
   if (props.mode === 'create') return field.visibleOnCreate !== false;
   if (props.mode === 'update') return field.visibleOnUpdate !== false;
   return field.visibleOnDetail !== false;
+}
+
+function isFieldMandatory(field: FormFieldDef) {
+  const perm = props.fieldPermissions?.[field.field];
+  if (perm === 'required') return true;
+  if (isOptionalByDependencies(field.dependencies, props.modelValue)) {
+    return false;
+  }
+  if (isDependencyRequired(field)) return true;
+  return isFieldRequired(field, props.mode);
 }
 
 function spanClass(field: FormFieldDef) {
@@ -175,7 +270,7 @@ function tableColumns(field: FormFieldDef) {
         :class="designer ? 'text-foreground' : 'text-muted-foreground'"
       >
         <span>{{ field.title || field.field }}</span>
-        <span v-if="isFieldRequired(field, mode)" class="text-red-500">*</span>
+        <span v-if="isFieldMandatory(field)" class="text-red-500">*</span>
         <span
           v-if="designer && isCollection(field)"
           class="rounded bg-primary/10 px-1 text-[10px] text-primary"
@@ -419,6 +514,144 @@ function tableColumns(field: FormFieldDef) {
         :value="String(modelValue[field.field] ?? '')"
         @update:value="(v) => patch(field.field, v)"
       />
+      <Select
+        v-else-if="field.control === 'userPicker'"
+        :disabled="isReadonly(field) || designer"
+        :mode="field.controlProps?.multiple ? 'multiple' : undefined"
+        :options="userOptions"
+        :placeholder="field.placeholder || '选择用户'"
+        :value="modelValue[field.field] as any"
+        show-search
+        class="w-full"
+        @update:value="(v) => patch(field.field, v)"
+      />
+      <TreeSelect
+        v-else-if="field.control === 'deptPicker'"
+        :disabled="isReadonly(field) || designer"
+        :multiple="!!field.controlProps?.multiple"
+        :placeholder="field.placeholder || '选择部门'"
+        :tree-data="deptTree"
+        :value="modelValue[field.field] as any"
+        allow-clear
+        class="w-full"
+        show-search
+        tree-default-expand-all
+        @update:value="(v) => patch(field.field, v)"
+      />
+      <Select
+        v-else-if="field.control === 'select'"
+        :disabled="isReadonly(field) || designer"
+        :placeholder="field.placeholder || '请选择'"
+        :value="modelValue[field.field] as any"
+        :options="
+          field.controlProps?.options || [
+            { label: '选项 1', value: 'opt1' },
+            { label: '选项 2', value: 'opt2' },
+          ]
+        "
+        class="w-full"
+        @update:value="(v) => patch(field.field, v)"
+      />
+      <Radio.Group
+        v-else-if="field.control === 'radio'"
+        :disabled="isReadonly(field) || designer"
+        :value="modelValue[field.field] as any"
+        :options="
+          field.controlProps?.options || [
+            { label: '是 / 选项 A', value: 'A' },
+            { label: '否 / 选项 B', value: 'B' },
+          ]
+        "
+        @update:value="
+          (v) =>
+            patch(field.field, (v as any)?.target ? (v as any).target.value : v)
+        "
+      />
+      <Checkbox.Group
+        v-else-if="field.control === 'checkbox'"
+        :disabled="isReadonly(field) || designer"
+        :value="(modelValue[field.field] as any) || []"
+        :options="
+          field.controlProps?.options || [
+            { label: '选项 A', value: 'A' },
+            { label: '选项 B', value: 'B' },
+          ]
+        "
+        @update:value="(v) => patch(field.field, v)"
+      />
+      <Cascader
+        v-else-if="field.control === 'cascader'"
+        :disabled="isReadonly(field) || designer"
+        :options="field.controlProps?.options || []"
+        :placeholder="field.placeholder || '请选择'"
+        :value="(modelValue[field.field] as any) || []"
+        class="w-full"
+        @update:value="(v) => patch(field.field, v)"
+      />
+      <Rate
+        v-else-if="field.control === 'rate'"
+        :disabled="isReadonly(field) || designer"
+        :value="Number(modelValue[field.field] || 0)"
+        @update:value="(v) => patch(field.field, v)"
+      />
+      <Input
+        v-else-if="field.control === 'password'"
+        type="password"
+        :disabled="isReadonly(field) || designer"
+        :placeholder="field.placeholder"
+        :value="String(modelValue[field.field] ?? '')"
+        @update:value="(v) => patch(field.field, v)"
+      />
+      <TimePicker
+        v-else-if="field.control === 'time'"
+        class="w-full"
+        value-format="HH:mm:ss"
+        :disabled="isReadonly(field) || designer"
+        :placeholder="field.placeholder || '选择时间'"
+        :value="(modelValue[field.field] as string) || undefined"
+        @update:value="(v) => patch(field.field, v || '')"
+      />
+      <DatePicker.RangePicker
+        v-else-if="field.control === 'dateRange'"
+        class="w-full"
+        value-format="YYYY-MM-DD"
+        :disabled="isReadonly(field) || designer"
+        :value="
+          Array.isArray(modelValue[field.field])
+            ? (modelValue[field.field] as [string, string])
+            : undefined
+        "
+        @update:value="(v) => patch(field.field, v || [])"
+      />
+      <Slider
+        v-else-if="field.control === 'slider'"
+        :disabled="isReadonly(field) || designer"
+        :value="Number(modelValue[field.field] || 0)"
+        @update:value="(v) => patch(field.field, v)"
+      />
+      <div
+        v-else-if="field.control === 'upload'"
+        class="flex items-center gap-2"
+      >
+        <Input
+          :disabled="isReadonly(field) || designer"
+          :placeholder="field.placeholder || '附件名称'"
+          :value="String(modelValue[field.field] ?? '')"
+          class="flex-1"
+          @update:value="(v) => patch(field.field, v)"
+        />
+        <Upload
+          :before-upload="
+            (file: { name: string }) => keepUploadName(field.field, file)
+          "
+          :disabled="isReadonly(field) || designer"
+          :show-upload-list="false"
+        >
+          <Button size="small" :disabled="isReadonly(field) || designer">
+            选择文件
+          </Button>
+        </Upload>
+      </div>
       <Input
         v-else
         :disabled="isReadonly(field) || designer"

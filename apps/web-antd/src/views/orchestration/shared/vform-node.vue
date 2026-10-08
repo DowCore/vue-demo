@@ -4,9 +4,10 @@
  * 容器：grid-col、table-cell、tab、card、sub-form
  * 字段：开源 basicFields + advancedFields
  */
+import type { DeptTreeNode } from './org-options';
 import type { VFormWidget } from './vform-model';
 
-import { computed, defineAsyncComponent, onMounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue';
 
 import {
   Button,
@@ -23,9 +24,18 @@ import {
   Switch,
   Tabs,
   TimePicker,
+  TreeSelect,
   Upload,
 } from 'ant-design-vue';
 
+import {
+  appliedSetValue,
+  isDisabledByDependencies,
+  isHiddenByDependencies,
+  isOptionalByDependencies,
+  isRequiredByDependencies,
+} from './form-dependencies';
+import { loadDeptTree, loadUserOptions } from './org-options';
 import { runWidgetEvent, validationPattern } from './vform-events';
 
 defineOptions({ name: 'VFormNode' });
@@ -37,6 +47,7 @@ const props = defineProps<{
   selectedId?: string;
   labelWidth?: number;
   labelPosition?: 'left' | 'top';
+  fieldPermissions?: Record<string, string>;
 }>();
 
 const emit = defineEmits<{
@@ -55,6 +66,8 @@ const emit = defineEmits<{
 
 const VFormRepeat = defineAsyncComponent(() => import('./vform-repeat.vue'));
 
+const userOptions = ref<{ label: string; value: string }[]>([]);
+const deptTree = ref<DeptTreeNode[]>([]);
 const overId = ref('');
 const errorText = ref('');
 const opt = computed(() => props.widget.options || {});
@@ -102,10 +115,39 @@ function onButtonClick(event: MouseEvent) {
 }
 
 onMounted(() => {
+  if (props.widget.type === 'user-picker') {
+    loadUserOptions().then((items) => {
+      userOptions.value = items;
+    });
+  }
+  if (props.widget.type === 'dept-picker') {
+    loadDeptTree().then((items) => {
+      deptTree.value = items;
+    });
+  }
   if (props.designer) return;
   runWidgetEvent(opt.value.onCreated, eventCtx(props.model[name.value]));
   runWidgetEvent(opt.value.onMounted, eventCtx(props.model[name.value]));
 });
+
+watch(
+  () => props.model,
+  () => {
+    if (props.designer) return;
+    const next = appliedSetValue(opt.value.dependencies, props.model);
+    if (next === undefined || props.model[name.value] === next) return;
+    patch(next);
+  },
+  { deep: true },
+);
+
+function keepUploadName(file: { name: string }) {
+  const current = props.model[name.value];
+  const names = Array.isArray(current) ? [...current] : [];
+  names.push(file.name);
+  patch(names);
+  return false;
+}
 
 function onSelect(e: MouseEvent) {
   if (!props.designer) return;
@@ -164,7 +206,31 @@ const labelAlignClass = computed(() => {
   if (opt.value.labelAlign === 'label-right-align') return 'text-right';
   return 'text-left';
 });
-const hidden = computed(() => !!opt.value.hidden && !props.designer);
+const permission = computed(() => props.fieldPermissions?.[name.value] || '');
+const hidden = computed(() => {
+  if (props.designer) return false;
+  if (opt.value.hidden) return true;
+  if (permission.value === 'hide') return true;
+  return isHiddenByDependencies(opt.value.dependencies, props.model);
+});
+const fieldDisabled = computed(() => {
+  if (props.designer) return !!opt.value.disabled;
+  if (permission.value === 'read') return true;
+  if (isDisabledByDependencies(opt.value.dependencies, props.model)) {
+    return true;
+  }
+  return !!opt.value.disabled || !!opt.value.readonly;
+});
+const fieldRequired = computed(() => {
+  if (permission.value === 'required') return true;
+  if (isOptionalByDependencies(opt.value.dependencies, props.model)) {
+    return false;
+  }
+  if (isRequiredByDependencies(opt.value.dependencies, props.model)) {
+    return true;
+  }
+  return !!opt.value.required;
+});
 
 function labelStyle() {
   const wrap = opt.value.labelWrap ? 'normal' : 'nowrap';
@@ -232,6 +298,7 @@ function labelStyle() {
           v-for="child in col.widgetList || []"
           :key="child.id"
           :designer="designer"
+          :field-permissions="fieldPermissions"
           :label-position="labelPosition"
           :label-width="labelWidth"
           :model="model"
@@ -275,6 +342,7 @@ function labelStyle() {
             v-for="child in cell.widgetList || []"
             :key="child.id"
             :designer="designer"
+            :field-permissions="fieldPermissions"
             :label-position="labelPosition"
             :label-width="labelWidth"
             :model="model"
@@ -314,6 +382,7 @@ function labelStyle() {
             v-for="child in pane.widgetList || []"
             :key="child.id"
             :designer="designer"
+            :field-permissions="fieldPermissions"
             :label-position="labelPosition"
             :label-width="labelWidth"
             :model="model"
@@ -363,6 +432,7 @@ function labelStyle() {
         v-for="child in widget.widgetList || []"
         :key="child.id"
         :designer="designer"
+        :field-permissions="fieldPermissions"
         :label-position="labelPosition"
         :label-width="labelWidth"
         :model="model"
@@ -402,7 +472,7 @@ function labelStyle() {
     <Divider v-else-if="widget.type === 'divider'">{{ opt.label }}</Divider>
     <Button
       v-else-if="widget.type === 'button'"
-      :disabled="opt.disabled"
+      :disabled="fieldDisabled"
       :type="opt.type || 'default'"
       @click="onButtonClick"
     >
@@ -421,13 +491,13 @@ function labelStyle() {
         :class="labelAlignClass"
         :style="labelStyle()"
       >
-        <span v-if="opt.required" class="text-red-500">*</span>
+        <span v-if="fieldRequired" class="text-red-500">*</span>
         {{ opt.label }}
       </label>
       <div class="min-w-0 flex-1">
         <Input
           v-if="widget.type === 'input'"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :placeholder="opt.placeholder"
           :readonly="opt.readonly"
           :type="opt.type === 'password' ? 'password' : 'text'"
@@ -441,7 +511,7 @@ function labelStyle() {
           v-else-if="
             widget.type === 'textarea' || widget.type === 'rich-editor'
           "
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :placeholder="opt.placeholder"
           :readonly="opt.readonly"
           :rows="opt.rows || (widget.type === 'rich-editor' ? 6 : 3)"
@@ -453,7 +523,7 @@ function labelStyle() {
         <InputNumber
           v-else-if="widget.type === 'number'"
           class="w-full"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :max="opt.max"
           :min="opt.min"
           :precision="opt.precision"
@@ -463,7 +533,7 @@ function labelStyle() {
         />
         <Radio.Group
           v-else-if="widget.type === 'radio'"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :value="model[name] ?? opt.defaultValue"
           @update:value="patch"
         >
@@ -477,7 +547,7 @@ function labelStyle() {
         </Radio.Group>
         <Checkbox.Group
           v-else-if="widget.type === 'checkbox'"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :options="
             (opt.optionItems || []).map((i: any) => ({
               label: i.label,
@@ -491,7 +561,7 @@ function labelStyle() {
           v-else-if="widget.type === 'select'"
           class="w-full"
           :allow-clear="opt.clearable !== false"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :mode="opt.multiple ? 'multiple' : undefined"
           :options="
             (opt.optionItems || []).map((i: any) => ({
@@ -507,28 +577,28 @@ function labelStyle() {
         <TimePicker
           v-else-if="widget.type === 'time'"
           class="w-full"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           value-format="HH:mm:ss"
           @update:value="patch"
         />
         <TimePicker.RangePicker
           v-else-if="widget.type === 'time-range'"
           class="w-full"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           value-format="HH:mm:ss"
           @update:value="patch"
         />
         <DatePicker
           v-else-if="widget.type === 'date'"
           class="w-full"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           value-format="YYYY-MM-DD"
           @update:value="patch"
         />
         <DatePicker.RangePicker
           v-else-if="widget.type === 'date-range'"
           class="w-full"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           value-format="YYYY-MM-DD"
           @update:value="patch"
         />
@@ -536,7 +606,7 @@ function labelStyle() {
           v-else-if="widget.type === 'switch'"
           :checked="!!(model[name] ?? opt.defaultValue)"
           :checked-children="opt.activeText"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :un-checked-children="opt.inactiveText"
           @update:checked="patch"
         />
@@ -544,7 +614,7 @@ function labelStyle() {
           v-else-if="widget.type === 'rate'"
           :allow-half="!!opt.allowHalf"
           :count="opt.max || 5"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :value="Number(model[name] ?? opt.defaultValue ?? 0)"
           @update:value="patch"
         />
@@ -552,23 +622,48 @@ function labelStyle() {
           v-else-if="widget.type === 'color'"
           class="h-8 w-16 cursor-pointer border border-border bg-transparent"
           type="color"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :value="String(model[name] || opt.defaultValue || '#1677ff')"
           @input="patch(($event.target as HTMLInputElement).value)"
         />
         <Slider
           v-else-if="widget.type === 'slider'"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :max="opt.max ?? 100"
           :min="opt.min ?? 0"
           :step="opt.step ?? 1"
           :value="Number(model[name] ?? opt.defaultValue ?? 0)"
           @update:value="patch"
         />
+        <Select
+          v-else-if="widget.type === 'user-picker'"
+          class="w-full"
+          allow-clear
+          show-search
+          :disabled="fieldDisabled"
+          :mode="opt.multiple ? 'multiple' : undefined"
+          :options="userOptions"
+          :placeholder="opt.placeholder || '选择用户'"
+          :value="(model[name] as any) ?? undefined"
+          @update:value="patch"
+        />
+        <TreeSelect
+          v-else-if="widget.type === 'dept-picker'"
+          class="w-full"
+          allow-clear
+          show-search
+          tree-default-expand-all
+          :disabled="fieldDisabled"
+          :multiple="!!opt.multiple"
+          :placeholder="opt.placeholder || '选择部门'"
+          :tree-data="deptTree"
+          :value="(model[name] as any) ?? undefined"
+          @update:value="patch"
+        />
         <Cascader
           v-else-if="widget.type === 'cascader'"
           class="w-full"
-          :disabled="opt.disabled"
+          :disabled="fieldDisabled"
           :options="opt.optionItems || []"
           :placeholder="opt.placeholder"
           @update:value="patch"
@@ -577,8 +672,8 @@ function labelStyle() {
           v-else-if="
             widget.type === 'picture-upload' || widget.type === 'file-upload'
           "
-          :before-upload="() => false"
-          :disabled="opt.disabled"
+          :before-upload="keepUploadName"
+          :disabled="fieldDisabled"
           :list-type="
             widget.type === 'picture-upload' ? 'picture-card' : 'text'
           "

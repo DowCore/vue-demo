@@ -5,6 +5,7 @@
  * 与逻辑编排 definitions 完全分离
  */
 import type {
+  FormDef,
   FormDefinitionLookup,
   WorkflowDefinition,
   WorkflowTask,
@@ -35,11 +36,14 @@ import {
   createWorkflowDefinitionApi,
   deleteWorkflowDefinitionApi,
   getMyWorkflowTasksApi,
+  getPublishedFormDefinitionApi,
   getPublishedFormLookupApi,
   getWorkflowDefinitionsApi,
   publishWorkflowDefinitionApi,
   startWorkflowApi,
 } from '#/api/saas/orchestration';
+import { normalizeFormDef } from '#/views/orchestration/shared/form-schema';
+import FormSchemaRenderer from '#/views/orchestration/shared/form-schema-renderer.vue';
 
 defineOptions({ name: 'OrchestrationWorkflows' });
 
@@ -149,29 +153,112 @@ async function publish(row: WorkflowDefinition) {
   await load();
 }
 
+const startSchema = ref<FormDef | null>(null);
+const startDraft = ref<Record<string, unknown>>({});
+const formSchemas = ref<Record<string, FormDef>>({});
+const drafts = reactive<Record<string, Record<string, unknown>>>({});
+
+function parseRecord(text?: string) {
+  try {
+    const value = JSON.parse(text || '{}');
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  } catch {
+    /* 空单据 */
+  }
+  return {};
+}
+
+interface HistoryItem {
+  nodeId?: string;
+  nodeName?: string;
+  operatorUserName?: string;
+  action?: string;
+  opinion?: string;
+  time?: string;
+}
+
+function historyItems(task: WorkflowTask): HistoryItem[] {
+  try {
+    const list = JSON.parse(task.historyJson || '[]');
+    return Array.isArray(list) ? (list as HistoryItem[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function actionLabel(action: string) {
+  if (action === 'start') return '发起';
+  if (action === 'approve') return '同意';
+  if (action === 'reject_to_prev') return '驳回上一步';
+  if (action === 'reject_to_starter') return '退回发起人';
+  if (action === 'reject_terminate') return '终止作废';
+  if (action === 'transfer') return '转办';
+  return action || '办理';
+}
+
+function recordPatch(task: WorkflowTask) {
+  const original = parseRecord(task.recordJson);
+  const draft = drafts[task.id] || original;
+  const perms = task.fieldPermissions || {};
+  const patch: Record<string, unknown> = {};
+  const keys = new Set([...Object.keys(original), ...Object.keys(draft)]);
+  for (const key of keys) {
+    const perm = perms[key];
+    if (perm === 'read' || perm === 'hide') continue;
+    if (JSON.stringify(original[key]) !== JSON.stringify(draft[key])) {
+      patch[key] = draft[key];
+    }
+  }
+  return patch;
+}
+
+async function ensureForm(code?: string) {
+  if (!code || formSchemas.value[code]) return formSchemas.value[code || ''];
+  const form = await getPublishedFormDefinitionApi(code);
+  formSchemas.value = {
+    ...formSchemas.value,
+    [code]: normalizeFormDef(form.schema),
+  };
+  return formSchemas.value[code];
+}
+
 function openStart(row: WorkflowDefinition) {
   starting.value = row;
   startRecord.value = '{}';
+  startSchema.value = null;
+  startDraft.value = {};
+  if (!row.formRef) return;
+  ensureForm(row.formRef).then((schema) => {
+    startSchema.value = schema || null;
+  });
 }
 
-async function confirmStart() {
-  if (!starting.value) return;
-  let recordJson = startRecord.value.trim() || '{}';
+function startRecordJson() {
+  if (startSchema.value) return JSON.stringify(startDraft.value);
+  const raw = startRecord.value.trim() || '{}';
   try {
-    const parsed = JSON.parse(recordJson);
+    const parsed = JSON.parse(raw);
     if (
       parsed === null ||
       typeof parsed !== 'object' ||
       Array.isArray(parsed)
     ) {
       message.warning('提交数据需要是一个 JSON 对象');
-      return;
+      return undefined;
     }
-    recordJson = JSON.stringify(parsed);
+    return JSON.stringify(parsed);
   } catch {
     message.warning('提交数据不是合法 JSON');
-    return;
+    return undefined;
   }
+}
+
+async function confirmStart() {
+  if (!starting.value) return;
+  const recordJson = startRecordJson();
+  if (recordJson === undefined) return;
   startBusy.value = true;
   try {
     const instance = await startWorkflowApi({
@@ -195,6 +282,10 @@ async function openTasks() {
   try {
     const res = await getMyWorkflowTasksApi();
     tasks.value = res.items || [];
+    for (const task of tasks.value) {
+      drafts[task.id] = parseRecord(task.recordJson);
+      if (task.formRef) await ensureForm(task.formRef);
+    }
   } finally {
     tasksLoading.value = false;
   }
@@ -210,14 +301,51 @@ function completeHint(
   return '已记录，等待其他人';
 }
 
-async function completeTask(task: WorkflowTask, pass: boolean) {
+const transferUsers = reactive<Record<string, string>>({});
+const showTransfer = reactive<Record<string, boolean>>({});
+
+async function executeTaskAction(
+  task: WorkflowTask,
+  action:
+    | 'approve'
+    | 'reject_terminate'
+    | 'reject_to_prev'
+    | 'reject_to_starter'
+    | 'transfer',
+) {
   const opinion = opinions[task.id]?.trim();
+  const transferUser = transferUsers[task.id]?.trim();
+
+  if (action === 'transfer' && !transferUser) {
+    message.warning('请输入转办目标用户名');
+    return;
+  }
+
   try {
+    const patch = recordPatch(task);
     const instance = await completeWorkflowTaskApi(task.id, {
-      pass,
+      action,
+      pass: action === 'approve',
       opinion: opinion || undefined,
+      transferUserName: action === 'transfer' ? transferUser : undefined,
+      recordPatch:
+        (action === 'approve' || action === 'reject_to_starter') &&
+        Object.keys(patch).length > 0
+          ? patch
+          : undefined,
     });
-    message.success(completeHint(instance.status, pass, instance.result));
+    if (action === 'approve') {
+      message.success(completeHint(instance.status, true, instance.result));
+    } else if (action === 'transfer') {
+      message.success(`已转办给 ${transferUser}`);
+    } else if (action === 'reject_to_starter') {
+      message.success('已退回给发起人修改');
+    } else if (action === 'reject_to_prev') {
+      message.success('已驳回至上一审批节点');
+    } else {
+      message.warning('已彻底终止作废该流程');
+    }
+    showTransfer[task.id] = false;
     await openTasks();
   } catch {
     /* 拦截器已提示 */
@@ -428,21 +556,30 @@ onMounted(load);
         {{ starting?.name }} · 表单
         <code>{{ starting?.formRef || '未绑定' }}</code>
       </p>
-      <Input.TextArea
-        v-model:value="startRecord"
-        :rows="8"
-        class="font-mono"
-        placeholder="{&quot;days&quot;:3}"
+      <FormSchemaRenderer
+        v-if="startSchema"
+        mode="create"
+        :model-value="startDraft"
+        :schema="startSchema"
+        @update:model-value="(v) => (startDraft = v)"
       />
-      <p class="mt-1 text-xs text-muted-foreground">
-        一份提交数据。子表是数组，树的下级在 children。
-      </p>
+      <template v-else>
+        <Input.TextArea
+          v-model:value="startRecord"
+          :rows="8"
+          class="font-mono"
+          placeholder="{&quot;days&quot;:3}"
+        />
+        <p class="mt-1 text-xs text-muted-foreground">
+          未绑定表单时直接填写一份 JSON。子表是数组。
+        </p>
+      </template>
     </Modal>
 
     <Drawer
       v-model:open="tasksOpen"
       title="我的待办"
-      width="480"
+      width="760"
       :body-style="{ paddingTop: '12px' }"
     >
       <div v-if="tasksLoading" class="text-sm text-muted-foreground">
@@ -464,22 +601,90 @@ onMounted(load);
             <span v-if="task.candidateRole">
               · 角色 {{ task.candidateRole }}</span>
           </div>
+          <ol
+            v-if="historyItems(task).length"
+            class="mt-3 space-y-2 border-l border-border pl-3"
+          >
+            <li v-for="(item, index) in historyItems(task)" :key="index">
+              <div class="text-sm">
+                {{ actionLabel(String(item.action || '')) }} ·
+                {{ item.nodeName || item.nodeId }}
+              </div>
+              <div class="text-xs text-muted-foreground">
+                {{ item.operatorUserName }}
+                <span v-if="item.time"> · {{ item.time }}</span>
+              </div>
+              <div v-if="item.opinion" class="text-xs">{{ item.opinion }}</div>
+            </li>
+          </ol>
+          <FormSchemaRenderer
+            v-if="task.formRef && formSchemas[task.formRef]"
+            class="mt-3"
+            mode="update"
+            :field-permissions="task.fieldPermissions"
+            :model-value="drafts[task.id] || {}"
+            :schema="formSchemas[task.formRef]"
+            @update:model-value="(v) => (drafts[task.id] = v)"
+          />
           <Input.TextArea
             v-model:value="opinions[task.id]"
             :rows="2"
             class="mt-2"
             placeholder="处理意见"
           />
-          <Space class="mt-2">
+          <div
+            v-if="showTransfer[task.id]"
+            class="mt-2 flex items-center gap-2"
+          >
+            <Input
+              v-model:value="transferUsers[task.id]"
+              size="small"
+              placeholder="请输入接手人用户名"
+              class="flex-1"
+            />
             <Button
               size="small"
               type="primary"
-              @click="completeTask(task, true)"
+              @click="executeTaskAction(task, 'transfer')"
+            >
+              确认转办
+            </Button>
+            <Button size="small" @click="showTransfer[task.id] = false">
+              取消
+            </Button>
+          </div>
+          <Space wrap class="mt-2">
+            <Button
+              size="small"
+              type="primary"
+              @click="executeTaskAction(task, 'approve')"
             >
               同意
             </Button>
-            <Button danger size="small" @click="completeTask(task, false)">
-              驳回
+            <Button
+              size="small"
+              @click="executeTaskAction(task, 'reject_to_prev')"
+            >
+              驳回上一步
+            </Button>
+            <Button
+              size="small"
+              @click="executeTaskAction(task, 'reject_to_starter')"
+            >
+              退回发起人
+            </Button>
+            <Button
+              size="small"
+              @click="showTransfer[task.id] = !showTransfer[task.id]"
+            >
+              转办
+            </Button>
+            <Button
+              danger
+              size="small"
+              @click="executeTaskAction(task, 'reject_terminate')"
+            >
+              终止作废
             </Button>
           </Space>
         </div>

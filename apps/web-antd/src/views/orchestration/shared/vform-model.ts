@@ -255,6 +255,13 @@ export function createWidget(type: string, columns = 2): VFormWidget {
         clearable: true,
       });
     }
+    case 'password': {
+      return field('密码', true, {
+        type: 'password',
+        showPassword: true,
+        clearable: true,
+      });
+    }
     case 'textarea': {
       return field('多行输入', true, { rows: 3 });
     }
@@ -377,12 +384,25 @@ export function createWidget(type: string, columns = 2): VFormWidget {
       return field('级联选择', true, {
         optionItems: [
           {
-            label: '分组1',
-            value: 1,
-            children: [{ label: '子项1', value: 11 }],
+            label: '分类1',
+            value: 'c1',
+            children: [{ label: '子项', value: 'c1-1' }],
           },
-          { label: '分组2', value: 2 },
         ],
+        clearable: true,
+      });
+    }
+    case 'user-picker': {
+      return field('用户', true, {
+        placeholder: '选择用户',
+        multiple: false,
+        orgScope: 'all',
+      });
+    }
+    case 'dept-picker': {
+      return field('部门', true, {
+        placeholder: '选择部门',
+        multiple: false,
       });
     }
     default: {
@@ -412,6 +432,7 @@ export const paletteGroups = [
     label: '基础字段',
     items: [
       { type: 'input', label: '单行输入' },
+      { type: 'password', label: '密码' },
       { type: 'textarea', label: '多行输入' },
       { type: 'number', label: '计数器' },
       { type: 'radio', label: '单选项' },
@@ -439,6 +460,8 @@ export const paletteGroups = [
       { type: 'file-upload', label: '文件' },
       { type: 'rich-editor', label: '富文本' },
       { type: 'cascader', label: '级联选择' },
+      { type: 'user-picker', label: '用户' },
+      { type: 'dept-picker', label: '部门' },
     ],
   },
 ];
@@ -578,23 +601,26 @@ export function removeWidget(list: VFormWidget[], id: string): boolean {
 
 const controlMap: Record<string, string> = {
   input: 'input',
+  password: 'password',
   textarea: 'textarea',
   number: 'number',
-  radio: 'input',
-  checkbox: 'input',
-  select: 'input',
-  time: 'datetime',
-  'time-range': 'input',
+  radio: 'radio',
+  checkbox: 'checkbox',
+  select: 'select',
+  time: 'time',
+  'time-range': 'time',
   date: 'date',
-  'date-range': 'input',
+  'date-range': 'dateRange',
   switch: 'switch',
-  rate: 'number',
+  rate: 'rate',
   color: 'input',
-  slider: 'number',
-  'picture-upload': 'input',
-  'file-upload': 'input',
+  slider: 'slider',
+  'picture-upload': 'upload',
+  'file-upload': 'upload',
   'rich-editor': 'textarea',
-  cascader: 'input',
+  cascader: 'cascader',
+  'user-picker': 'userPicker',
+  'dept-picker': 'deptPicker',
 };
 
 export interface SubTableColumn {
@@ -762,6 +788,12 @@ function scalarRules(options: VFormWidget['options']) {
 }
 
 function scalarField(w: VFormWidget): FormFieldDef {
+  const options = Array.isArray(w.options.optionItems)
+    ? w.options.optionItems
+    : undefined;
+  const dependencies = Array.isArray(w.options.dependencies)
+    ? w.options.dependencies
+    : undefined;
   return {
     field: String(w.options.name),
     title: String(w.options.label || w.options.name),
@@ -771,6 +803,12 @@ function scalarField(w: VFormWidget): FormFieldDef {
     requiredOnCreate: !!w.options.required,
     requiredOnUpdate: !!w.options.required,
     rules: scalarRules(w.options),
+    dependencies,
+    controlProps: {
+      ...(options ? { options } : {}),
+      ...(w.options.multiple ? { multiple: true } : {}),
+      ...(w.options.orgScope ? { orgScope: w.options.orgScope } : {}),
+    },
   };
 }
 

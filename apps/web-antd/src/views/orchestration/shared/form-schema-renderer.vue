@@ -20,8 +20,11 @@ const props = withDefaults(
     schema: FormDef | null | undefined;
     mode: 'create' | 'detail' | 'update';
     modelValue: Record<string, unknown>;
+    fieldPermissions?: Record<string, string>;
   }>(),
-  {},
+  {
+    fieldPermissions: () => ({}),
+  },
 );
 
 const emit = defineEmits<{
@@ -43,12 +46,14 @@ const schema = computed(() => normalizeFormDef(props.schema || { fields: [] }));
     </div>
     <VFormRender
       v-if="schema.vformJson"
+      :field-permissions="fieldPermissions"
       :json="schema.vformJson"
       :model-value="modelValue"
       @update:model-value="(v) => emit('update:modelValue', v)"
     />
     <FormLayoutView
       v-else
+      :field-permissions="fieldPermissions"
       :mode="mode"
       :model-value="modelValue"
       :schema="schema"

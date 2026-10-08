@@ -16,6 +16,7 @@ const props = defineProps<{
   schema: FormDef;
   mode: 'create' | 'detail' | 'update';
   modelValue: Record<string, unknown>;
+  fieldPermissions?: Record<string, string>;
 }>();
 
 const emit = defineEmits<{
@@ -52,6 +53,7 @@ function asFields(nodes: FormWidgetDef[]) {
         >
           <RecordFormFields
             v-if="child.kind === 'field'"
+            :field-permissions="fieldPermissions"
             :fields="asFields([child])"
             :mode="mode"
             :model-value="modelValue"
@@ -74,6 +76,7 @@ function asFields(nodes: FormWidgetDef[]) {
           <div v-for="child in node.children || []" :key="child.id">
             <RecordFormFields
               v-if="child.kind === 'field'"
+              :field-permissions="fieldPermissions"
               :fields="asFields([child])"
               :mode="mode"
               :model-value="modelValue"
@@ -89,6 +92,7 @@ function asFields(nodes: FormWidgetDef[]) {
           (node.container === 'data-table' || node.container === 'subform') &&
           !node.hidden
         "
+        :field-permissions="fieldPermissions"
         :fields="asFields([node])"
         :mode="mode"
         :model-value="modelValue"
@@ -97,6 +101,7 @@ function asFields(nodes: FormWidgetDef[]) {
 
       <RecordFormFields
         v-else-if="node.kind === 'field' && !node.hidden"
+        :field-permissions="fieldPermissions"
         :fields="asFields([node])"
         :mode="mode"
         :model-value="modelValue"
@@ -106,6 +111,7 @@ function asFields(nodes: FormWidgetDef[]) {
   </div>
   <RecordFormFields
     v-else
+    :field-permissions="fieldPermissions"
     :fields="normalized.fields"
     :mode="mode"
     :model-value="modelValue"

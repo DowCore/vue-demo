@@ -43,6 +43,7 @@ import {
 } from 'ant-design-vue';
 
 import {
+  getPublishedFormDefinitionApi,
   getPublishedFormLookupApi,
   getReusableFlowLookupApi,
   getWorkflowDefinitionApi,
@@ -132,6 +133,8 @@ const selected = reactive({
   assigneeFlowKey: undefined as string | undefined,
   multi: 'single' as string | undefined,
   multiRatio: 100,
+  emptyFallback: 'admin',
+  fieldPermissions: {} as Record<string, string>,
   conditionText: '',
   leaveCondition: emptyBlock(),
   edgeCondition: emptyBlock(),
@@ -140,7 +143,34 @@ const selected = reactive({
 const canvas = shallowRef<null | WorkflowCanvas>(null);
 let applying = false;
 
-function typeLabel(type: string) {
+const boundFields = ref<{ field: string; title: string }[]>([]);
+
+async function loadBoundFields(code?: string) {
+  if (!code) {
+    boundFields.value = [];
+    return;
+  }
+  try {
+    const form = await getPublishedFormDefinitionApi(code);
+    boundFields.value = (form.schema?.fields || []).map((field) => ({
+      field: field.field,
+      title: field.title || field.field,
+    }));
+  } catch {
+    boundFields.value = [];
+  }
+}
+
+function setFieldPermission(field: string, value: string) {
+  const next: Record<string, string> = {};
+  for (const [key, perm] of Object.entries(selected.fieldPermissions || {})) {
+    if (key !== field) next[key] = perm;
+  }
+  if (value) next[field] = value;
+  selected.fieldPermissions = next;
+}
+
+function typeLabel(type?: string) {
   if (type === 'start') return '开始';
   if (type === 'approver') return '接收';
   if (type === 'cc') return '抄送';
@@ -202,6 +232,11 @@ function fillSelected(payload: WfSelection) {
   selected.assigneeFlowKey = (data.assigneeFlowKey as string) || undefined;
   selected.multi = (data.multi as string) || 'single';
   selected.multiRatio = Number(data.multiRatio || 100);
+  selected.emptyFallback = (data.emptyFallback as string) || 'admin';
+  selected.fieldPermissions =
+    data.fieldPermissions && typeof data.fieldPermissions === 'object'
+      ? { ...(data.fieldPermissions as Record<string, string>) }
+      : {};
   selected.conditionText = String(data.conditionText || '');
   selected.leaveCondition = blockFrom(data.leaveCondition as WfConditionBlock, {
     field: String(data.conditionField || ''),
@@ -238,6 +273,8 @@ function pushSelection() {
       assigneeFlowKey: selected.assigneeFlowKey || '',
       multi: selected.multi,
       multiRatio: selected.multiRatio,
+      emptyFallback: selected.emptyFallback || 'admin',
+      fieldPermissions: { ...selected.fieldPermissions },
       conditionText: selected.conditionText,
       leaveCondition: selected.leaveCondition,
       conditionField: '',
@@ -269,6 +306,7 @@ async function load() {
     meta.name = wf.value.name;
     meta.description = wf.value.description || '';
     meta.formRef = wf.value.formRef;
+    await loadBoundFields(wf.value.formRef);
     meta.beforeStartFlowKey = wf.value.beforeStartFlowKey;
     meta.afterEndFlowKey = wf.value.afterEndFlowKey;
     const [forms, flows] = await Promise.all([
@@ -340,6 +378,12 @@ async function publish() {
   message.success('已发布');
 }
 
+watch(
+  () => meta.formRef,
+  (code) => {
+    loadBoundFields(code);
+  },
+);
 watch(showMiniMap, (visible) => canvas.value?.setMiniMapVisible(visible));
 watch(selected, pushSelection, { deep: true });
 watch(
@@ -716,6 +760,51 @@ onBeforeUnmount(() => {
                     (v) => (selected.multiRatio = Number(v) || 100)
                   "
                 />
+              </Form.Item>
+              <Form.Item label="候选人为空时">
+                <Select
+                  v-model:value="selected.emptyFallback"
+                  class="w-full"
+                  :options="[
+                    { label: '自动转交管理员 (admin)', value: 'admin' },
+                    { label: '自动跳过该节点', value: 'skip' },
+                    { label: '提示报错并阻断', value: 'error' },
+                  ]"
+                />
+              </Form.Item>
+              <Form.Item label="表单字段权限">
+                <p
+                  v-if="boundFields.length === 0"
+                  class="text-xs text-muted-foreground"
+                >
+                  先在左侧绑定一张已发布表单，这里会列出它的字段。
+                </p>
+                <div v-else class="flex flex-col gap-2">
+                  <div
+                    v-for="field in boundFields"
+                    :key="field.field"
+                    class="flex items-center gap-2"
+                  >
+                    <span class="w-28 truncate text-xs" :title="field.field">
+                      {{ field.title }}
+                    </span>
+                    <Select
+                      class="flex-1"
+                      size="small"
+                      :options="[
+                        { label: '按表单本身', value: '' },
+                        { label: '只读', value: 'read' },
+                        { label: '可编辑', value: 'write' },
+                        { label: '隐藏', value: 'hide' },
+                        { label: '必填', value: 'required' },
+                      ]"
+                      :value="selected.fieldPermissions[field.field] || ''"
+                      @update:value="
+                        (v) => setFieldPermission(field.field, String(v || ''))
+                      "
+                    />
+                  </div>
+                </div>
               </Form.Item>
               <Form.Item label="离开本节点的条件">
                 <WorkflowConditionEditor

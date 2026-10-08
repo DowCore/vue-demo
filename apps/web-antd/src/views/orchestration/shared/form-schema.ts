@@ -11,15 +11,27 @@ import type {
 import { flattenVFormFields, parseVForm } from './vform-model';
 
 const CONTROLS = new Set([
+  'cascader',
+  'checkbox',
   'date',
+  'dateRange',
   'datetime',
+  'deptPicker',
   'input',
   'list',
   'number',
+  'password',
+  'radio',
+  'rate',
+  'select',
+  'slider',
   'switch',
   'table',
   'textarea',
+  'time',
   'tree',
+  'upload',
+  'userPicker',
 ]);
 
 function fieldSpan(raw: unknown, control: string) {
@@ -34,6 +46,12 @@ function fieldSpan(raw: unknown, control: string) {
 function sampleCell(field: FormFieldDef) {
   if (field.control === 'number') return 1;
   if (field.control === 'switch') return true;
+  if (field.control === 'radio' || field.control === 'select') return '选项1';
+  if (field.control === 'checkbox') return ['选项1'];
+  if (field.control === 'userPicker') return 'admin';
+  if (field.control === 'deptPicker') return '总经办';
+  if (field.control === 'upload') return 'attachment.pdf';
+  if (field.control === 'rate') return 5;
   return `示例${field.title || field.field}`;
 }
 
@@ -80,6 +98,13 @@ function normalizeField(
     treeChildrenField:
       control === 'tree'
         ? String(raw.treeChildrenField || 'children')
+        : undefined,
+    dependencies: Array.isArray(raw.dependencies)
+      ? raw.dependencies
+      : undefined,
+    controlProps:
+      raw.controlProps && typeof raw.controlProps === 'object'
+        ? { ...raw.controlProps }
         : undefined,
   };
 }
