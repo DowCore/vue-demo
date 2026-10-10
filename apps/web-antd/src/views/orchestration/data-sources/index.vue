@@ -449,8 +449,8 @@ onMounted(async () => {
                 SQL Server 若报「证书链不受信任」，请在连接串加
                 <code>TrustServerCertificate=True</code>
                 （仅建议内网/开发）；或安装正规 CA 证书。示例：
-                <code class="break-all">Server=host,1433;Database=db;User
-                  Id=u;Password=p;Encrypt=True;TrustServerCertificate=True</code>
+                <code class="break-all">Server=&lt;主机&gt;,1433;Database=&lt;库名&gt;;User
+                  Id=&lt;用户名&gt;;Password=&lt;密码&gt;;Encrypt=True;TrustServerCertificate=True</code>
               </div>
             </template>
             <template v-else-if="providerMeta?.family === 'redis'">

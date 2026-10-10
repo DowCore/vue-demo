@@ -36,6 +36,7 @@ import {
   isRequiredByDependencies,
 } from './form-dependencies';
 import { loadDeptTree, loadUserOptions } from './org-options';
+import { sanitizeHtml } from './sanitize-html';
 import { runWidgetEvent, validationPattern } from './vform-events';
 
 defineOptions({ name: 'VFormNode' });
@@ -86,6 +87,8 @@ const CONTAINER_TAGS: Record<string, string> = {
   tree: '树形',
 };
 const containerTag = computed(() => CONTAINER_TAGS[props.widget.type] || '');
+/** html-text 组件的富文本：统一经 sanitize-html（DOMPurify 白名单）净化后再渲染。 */
+const htmlTextContent = computed(() => sanitizeHtml(opt.value.htmlContent));
 
 function eventCtx(value?: unknown, oldValue?: unknown) {
   return { value, oldValue, formModel: props.model };
@@ -512,16 +515,14 @@ function labelStyle() {
     >
       {{ opt.textContent }}
     </div>
+    <!-- html-text 的内容已在 script 里经 sanitizeHtml()（DOMPurify 白名单）净化，此处渲染安全 -->
+    <!-- eslint-disable vue/no-v-html -->
     <div
       v-else-if="widget.type === 'html-text'"
       class="py-1 text-sm"
-      v-html="
-        String(opt.htmlContent || '').replace(
-          /<script[\s\S]*?>[\s\S]*?<\/script>/gi,
-          '',
-        )
-      "
+      v-html="htmlTextContent"
     ></div>
+    <!-- eslint-enable vue/no-v-html -->
     <Divider v-else-if="widget.type === 'divider'">{{ opt.label }}</Divider>
     <Button
       v-else-if="widget.type === 'button'"

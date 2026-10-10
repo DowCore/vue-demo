@@ -19,6 +19,7 @@ import {
   Table,
 } from 'ant-design-vue';
 
+import { isRunnableCellFn } from './cell-script';
 import { applyColumnLayoutDefaults, columnOptions } from './format-cell';
 
 defineOptions({ name: 'ColumnDisplayEditor' });
@@ -46,6 +47,21 @@ const newTitle = ref('');
 
 const FORMAT_PLACEHOLDER = "return Number(raw) > 0 ? value + ' 元' : '—'";
 const RENDER_PLACEHOLDER = `return \`<span class="font-medium">\${value}</span>\``;
+
+/**
+ * 脚本不可执行时的提示。
+ *
+ * 只做静态判定，不试运行（设计期没有真实行数据）。运行态另有降级逻辑：
+ * 不可执行的脚本会被忽略并保留原值。
+ */
+function scriptIssue(source: null | string | undefined): string {
+  const text = String(source ?? '').trim();
+  if (!text || isRunnableCellFn(text)) return '';
+  return '脚本不可执行：可能使用了宿主能力（window / document / fetch / localStorage 等）、原型链，或存在语法错误。运行时会保留原值。';
+}
+
+const formatIssue = computed(() => scriptIssue(editing.value?.formatFn));
+const renderIssue = computed(() => scriptIssue(editing.value?.renderFn));
 
 const TONE_OPTIONS = [
   { label: '默认', value: '' },
@@ -541,25 +557,41 @@ function saveDrawer() {
         <p class="mb-2 text-xs text-muted-foreground">
           参数
           <code>value</code>（映射后文案）、<code>row</code>（当前行）、<code>raw</code>（原值）。可写
-          <code>return …</code> 或直接表达式。
+          <code>return …</code>，也可直接写表达式（自动按返回值处理）。支持完整
+          JS （循环 / <code>map</code> / <code>reduce</code> /
+          闭包），但脚本运行在沙箱里， 取不到
+          <code>window</code>、<code>document</code>、<code>fetch</code>
+          等宿主能力。
         </p>
-        <Input.TextArea
-          v-model:value="editing.formatFn"
-          :placeholder="FORMAT_PLACEHOLDER"
-          :rows="4"
-          class="mb-6 font-mono text-xs"
-        />
+        <div class="mb-6">
+          <Input.TextArea
+            v-model:value="editing.formatFn"
+            :placeholder="FORMAT_PLACEHOLDER"
+            :rows="4"
+            class="font-mono text-xs"
+          />
+          <p v-if="formatIssue" class="mt-1 text-xs text-amber-600">
+            {{ formatIssue }}
+          </p>
+        </div>
 
         <div class="mb-1 text-sm font-medium">Render（HTML）</div>
         <p class="mb-2 text-xs text-muted-foreground">
-          返回 HTML 字符串。同样是 value / row / raw。脚本标签会被去掉。
+          返回 HTML 字符串。同样是 value / row / raw。输出会经过白名单净化
+          （<code>script</code>、事件属性、<code>javascript:</code>
+          链接等一律去掉）。
         </p>
-        <Input.TextArea
-          v-model:value="editing.renderFn"
-          :placeholder="RENDER_PLACEHOLDER"
-          :rows="4"
-          class="mb-6 font-mono text-xs"
-        />
+        <div class="mb-6">
+          <Input.TextArea
+            v-model:value="editing.renderFn"
+            :placeholder="RENDER_PLACEHOLDER"
+            :rows="4"
+            class="font-mono text-xs"
+          />
+          <p v-if="renderIssue" class="mt-1 text-xs text-amber-600">
+            {{ renderIssue }}
+          </p>
+        </div>
 
         <div class="mb-1 text-sm font-medium">条件着色</div>
         <p class="mb-2 text-xs text-muted-foreground">

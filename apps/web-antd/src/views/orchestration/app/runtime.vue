@@ -9,6 +9,7 @@ import type { FilterNode } from '#/views/orchestration/shared/filter-model';
 import { computed, onActivated, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
+import { useAccess } from '@vben/access';
 import { Page } from '@vben/common-ui';
 
 import { Button, Drawer, message, Modal, Space, Table } from 'ant-design-vue';
@@ -44,6 +45,11 @@ import {
   migrateActions,
   resolveActionOpen,
 } from '#/views/orchestration/shared/open-action';
+import {
+  collectFilterFields,
+  sanitizeFilterNode,
+  sanitizeSorting,
+} from '#/views/orchestration/shared/query-guard';
 import RecordFormOverlay from '#/views/orchestration/shared/record-form-overlay.vue';
 import {
   buildActionLogicPayload,
@@ -54,8 +60,25 @@ import SearchFormPanel from '#/views/orchestration/shared/search-form-panel.vue'
 
 defineOptions({ name: 'AppResourceRuntime' });
 
+/**
+ * 运行应用资源所需的权限码。
+ * 与 `resources/index.vue`、`resources/editor.vue` 的「运行」按钮保持一致，
+ * 避免"菜单/按钮隐藏了，但直接敲 /app/:code 仍能进来"。
+ */
+const RUN_APP_CODE = 'Orchestration.Resources.Execute';
+
 const route = useRoute();
 const router = useRouter();
+const { hasAccessByCodes } = useAccess();
+
+/**
+ * 运行态入口鉴权（SEC-05）。
+ *
+ * 说明：前端校验只能收敛入口，**数据级权限必须由后端强制执行**；
+ * 这里不隐藏查询能力，无权限时直接给出可见提示（而不是静默空白页）。
+ */
+const canRun = computed(() => hasAccessByCodes([RUN_APP_CODE]));
+
 const loading = ref(false);
 const saving = ref(false);
 const resource = ref<AppResource | null>(null);
@@ -224,6 +247,30 @@ function summaryText(col: ListColumnDef | undefined) {
   return `${fn.toUpperCase()} ${formatCellDisplay(raw, col, {}, dictionaries.value)}`;
 }
 
+/** 查询入参白名单：列表列 + 表单字段 + 配置中声明的筛选字段（不含用户临时输入）。 */
+const allowedQueryFields = computed(() => {
+  const fields = new Set<string>();
+  const current = resource.value;
+  if (!current) return fields;
+  for (const column of current.listView.columns || []) {
+    if (column.field) fields.add(column.field);
+  }
+  for (const field of current.form.fields || []) {
+    if (field.field) fields.add(field.field);
+  }
+  if (current.titleField) fields.add(current.titleField);
+  for (const item of current.filter.items || []) {
+    if (item.left) fields.add(item.left);
+  }
+  for (const field of current.filter.searchForm?.fields || []) {
+    if (field.field) fields.add(field.field);
+  }
+  for (const preset of current.filter.presets || []) {
+    collectFilterFields(preset.filter, fields);
+  }
+  return fields;
+});
+
 function currentFilter(): FilterNode | undefined {
   const formTree = searchFormToFilter(searchFields.value, searchValues.value);
   const advanced = pruneFilter(advancedGroup.value);
@@ -254,11 +301,15 @@ async function loadRows() {
   if (!resource.value) return;
   loading.value = true;
   try {
-    const filter = currentFilter();
+    const filter = sanitizeFilterNode(
+      currentFilter(),
+      allowedQueryFields.value,
+    );
+    const sortText = sanitizeSorting(sorting.value, allowedQueryFields.value);
     const res = await queryAppResourceApi(resource.value.code, {
       page: page.current,
       pageSize: page.pageSize,
-      sorting: sorting.value || undefined,
+      sorting: sortText,
       filter,
       summaryFields: visibleColumns.value
         .filter((c) => c.summaryFn)
@@ -319,6 +370,42 @@ function openCreate(action?: ActionDef) {
   drawerOpen.value = true;
 }
 
+/** 把服务端记录映射进表单，并刷新乐观锁 stamp。 */
+function applyRecordToForm(record: Record<string, unknown>) {
+  const next: Record<string, unknown> = {};
+  for (const field of resource.value?.form.fields || []) {
+    next[field.field] = pickRecordValue(record, field.field);
+  }
+  formRecord.value = next;
+  concurrencyStamp.value = String(
+    pickRecordValue(record, 'ConcurrencyStamp') ?? '',
+  );
+}
+
+/** 并发冲突判定（各后端文案不一，这里做宽松匹配）。 */
+function isConcurrencyConflict(error?: string): boolean {
+  const text = String(error || '').toLowerCase();
+  return (
+    text.includes('concurrency') ||
+    text.includes('conflict') ||
+    text.includes('并发') ||
+    text.includes('已被修改')
+  );
+}
+
+/** 冲突后重新拉取最新记录，使用户下一次提交携带最新 stamp。 */
+async function refreshEditingRecord() {
+  if (!resource.value || !editingId.value) return;
+  const res = await getAppResourceRecordApi(
+    resource.value.code,
+    editingId.value,
+  );
+  if (!res.success) return;
+  const payload = (res.data || {}) as { record?: Record<string, unknown> };
+  const record = payload.record || (res.data as Record<string, unknown>);
+  applyRecordToForm(record);
+}
+
 async function openEdit(
   row: Record<string, unknown>,
   mode: 'detail' | 'update',
@@ -333,16 +420,9 @@ async function openEdit(
   }
   const payload = (res.data || {}) as { record?: Record<string, unknown> };
   const record = payload.record || (res.data as Record<string, unknown>);
-  const next: Record<string, unknown> = {};
-  for (const field of resource.value.form.fields) {
-    next[field.field] = pickRecordValue(record, field.field);
-  }
   formMode.value = mode;
   editingId.value = id;
-  formRecord.value = next;
-  concurrencyStamp.value = String(
-    pickRecordValue(record, 'ConcurrencyStamp') ?? '',
-  );
+  applyRecordToForm(record);
   whitelistFields.value =
     action?.fieldsMode === 'whitelist' ? action.fields || [] : null;
   formHost.value = formOverlayHost(action);
@@ -488,6 +568,13 @@ async function submitForm() {
         record: formRecord.value,
       });
       if (!res.success) {
+        if (isConcurrencyConflict(res.error)) {
+          message.warning(
+            '该记录已被他人修改，已加载最新数据，请确认后重新提交',
+          );
+          await refreshEditingRecord();
+          return;
+        }
         message.error(res.error || '更新失败');
         return;
       }
@@ -532,7 +619,7 @@ function onTableChange(_p: unknown, _f: unknown, sorter: unknown) {
 watch(
   () => route.params.code,
   async () => {
-    if (!code.value) return;
+    if (!code.value || !canRun.value) return;
     await loadResource();
     page.current = 1;
     await loadRows();
@@ -540,13 +627,13 @@ watch(
 );
 
 onMounted(async () => {
-  if (!code.value) return;
+  if (!code.value || !canRun.value) return;
   await loadResource();
   await loadRows();
 });
 
 onActivated(() => {
-  if (resource.value) loadRows();
+  if (resource.value && canRun.value) loadRows();
 });
 </script>
 
@@ -557,7 +644,17 @@ onActivated(() => {
     "
     :title="resource?.name || '资源运行时'"
   >
-    <div class="mb-4 space-y-3 rounded-lg border border-border p-3">
+    <!-- SEC-05：入口鉴权。下面所有根级内容都必须带 v-if="canRun"，否则等于绕过菜单直达运行时。 -->
+    <div
+      v-if="!canRun"
+      class="rounded-lg border border-border p-8 text-center text-sm text-muted-foreground"
+    >
+      你没有运行该应用的权限（需要 {{ RUN_APP_CODE }}），请联系管理员分配。
+    </div>
+    <div
+      v-if="canRun"
+      class="mb-4 space-y-3 rounded-lg border border-border p-3"
+    >
       <SearchFormPanel
         v-if="searchFields.length"
         v-model:model-value="searchValues"
@@ -605,6 +702,7 @@ onActivated(() => {
     </div>
 
     <Table
+      v-if="canRun"
       :columns="tableColumns"
       :data-source="rows"
       :loading="loading"
@@ -680,7 +778,12 @@ onActivated(() => {
       </template>
     </Table>
 
-    <Drawer v-model:open="advancedOpen" title="更多条件" width="560">
+    <Drawer
+      v-if="canRun"
+      v-model:open="advancedOpen"
+      title="更多条件"
+      width="560"
+    >
       <p class="mb-3 text-xs text-muted-foreground">
         用「全部满足 / 任一满足」组合条件，不必填写编号公式。空值会被忽略。
       </p>
@@ -713,6 +816,7 @@ onActivated(() => {
     </Drawer>
 
     <RecordFormOverlay
+      v-if="canRun"
       v-model:model-value="formRecord"
       v-model:open="drawerOpen"
       :fields="visibleFields"

@@ -7,6 +7,7 @@ import {
   nodeSize,
   normalizeNodeKind,
 } from './flow-meta';
+import { reportConfigFallback, tryJsonParse } from './safe-json';
 
 export interface ConditionItem {
   no: number;
@@ -229,7 +230,11 @@ export function parseDsl(dslJson?: string): DslDocument {
       edges: [],
     };
   }
-  const raw = JSON.parse(dslJson) as DslDocument;
+  const parsed = tryJsonParse<DslDocument>(dslJson);
+  if (!parsed.ok) {
+    throw new Error(`流程 DSL 不是合法 JSON：${parsed.error}`);
+  }
+  const raw = parsed.value;
   return {
     version: raw.version || '1.1',
     key: raw.key,
@@ -990,8 +995,8 @@ export function graphToDsl(
       try {
         const rules = JSON.parse(String(p.maskRulesJson || '[]'));
         if (Array.isArray(rules) && rules.length > 0) node.maskRules = rules;
-      } catch {
-        /* ignore */
+      } catch (error) {
+        reportConfigFallback('Mask 节点 maskRulesJson', error);
       }
     }
 
@@ -1008,8 +1013,8 @@ export function graphToDsl(
         if (Array.isArray(items) && items.length > 0) {
           node.payload = { item: items };
         }
-      } catch {
-        /* ignore */
+      } catch (error) {
+        reportConfigFallback('RabbitMqPublish 节点 payloadJson', error);
       }
     }
 
@@ -1025,8 +1030,8 @@ export function graphToDsl(
         if (Array.isArray(finals) && finals.length > 0) {
           node.finalOutputs = finals;
         }
-      } catch {
-        /* ignore */
+      } catch (error) {
+        reportConfigFallback('End 节点 finalOutputsJson', error);
       }
     }
 

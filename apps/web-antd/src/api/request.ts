@@ -21,6 +21,17 @@ import { refreshTokenApi } from './core';
 
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
 
+/**
+ * 全局请求超时（毫秒）。
+ *
+ * 背景：此前未设置任何超时，后端或网关无响应时请求会一直挂着——
+ * 页面停在 loading，用户无法区分"在跑"还是"已经断了"，也无法重试。
+ *
+ * 60s 是折中值（正常接口远小于此值）。确有耗时的批量/导出/发布接口，
+ * 可在单个请求里显式传 `timeout: 0`（表示不超时）覆盖此默认值。
+ */
+const REQUEST_TIMEOUT = 60_000;
+
 function applyTenantHeader(config: { headers: Record<string, any> }) {
   const ignore = config.headers?.['X-Ignore-Tenant'];
   if (ignore === '1' || ignore === 1 || ignore === true) {
@@ -162,11 +173,13 @@ function createRequestClient(baseURL: string, options?: RequestClientOptions) {
 
 export const requestClient = createRequestClient(apiURL, {
   responseReturn: 'body',
+  timeout: REQUEST_TIMEOUT,
 });
 
 export const baseRequestClient = new RequestClient({
   baseURL: apiURL,
   responseReturn: 'body',
+  timeout: REQUEST_TIMEOUT,
 });
 
 baseRequestClient.addResponseInterceptor(unwrapAbpResponse());

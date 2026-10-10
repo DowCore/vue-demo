@@ -6,7 +6,8 @@ import type {
 
 import dayjs from 'dayjs';
 
-import { runCellFn, sanitizeCellHtml } from './cell-script';
+import { runCellFn } from './cell-script';
+import { sanitizeHtml } from './sanitize-html';
 
 export function formatDictMap(map?: Record<string, string>): string {
   if (!map) return '';
@@ -172,7 +173,7 @@ export function formatCellHtml(
   const display = formatCellDisplay(value, column, row, dictionaries);
   const html = runCellFn(column.renderFn, display, row, value);
   if (html === null || html === undefined || html === '') return '';
-  return sanitizeCellHtml(String(html));
+  return sanitizeHtml(String(html));
 }
 
 export function toDatePickerValue(

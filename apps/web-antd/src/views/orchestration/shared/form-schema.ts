@@ -8,6 +8,7 @@ import type {
   FormWidgetDef,
 } from '#/api/saas/orchestration';
 
+import { tryJsonParse } from './safe-json';
 import { flattenVFormFields, parseVForm } from './vform-model';
 
 const CONTROLS = new Set([
@@ -428,8 +429,11 @@ export function parseFormDefJson(text: string): FormDef {
   if (!trimmed) {
     return { fields: [] };
   }
-  const parsed = JSON.parse(trimmed) as unknown;
-  return normalizeFormDef(parsed);
+  const parsed = tryJsonParse(trimmed);
+  if (!parsed.ok) {
+    throw new Error(`表单定义不是合法 JSON：${parsed.error}`);
+  }
+  return normalizeFormDef(parsed.value);
 }
 
 export function emptyRecord(fields: FormFieldDef[]): Record<string, unknown> {

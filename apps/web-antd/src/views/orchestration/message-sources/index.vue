@@ -57,7 +57,7 @@ const connectionPlaceholder = computed(() => {
       return 'localhost:9092  或  bootstrap.servers=localhost:9092';
     }
     case 'mqtt': {
-      return 'tcp://admin:admin@localhost:1883  或  Host=localhost;Port=1883;Username=admin;Password=admin';
+      return 'tcp://<用户名>:<密码>@localhost:1883  或  Host=localhost;Port=1883;Username=<用户名>;Password=<密码>';
     }
     default: {
       return '留空 = 平台默认 ConnectionStrings:rabbitmq；或 amqp://guest:guest@localhost:5672';
@@ -326,7 +326,7 @@ onMounted(async () => {
           <div class="text-muted-foreground mt-1 text-[11px] leading-relaxed">
             <template v-if="form.provider === 'mqtt'">
               本地示例：
-              <code>tcp://admin:admin@localhost:1883</code>
+              <code>tcp://&lt;用户名&gt;:&lt;密码&gt;@localhost:1883</code>
             </template>
             <template v-else-if="form.provider === 'kafka'">
               本地示例：

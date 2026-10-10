@@ -51,7 +51,10 @@ const tagColor = computed(() => {
 </script>
 
 <template>
+  <!-- html 来自 formatCellHtml()，内部已用 sanitizeHtml()（DOMPurify 白名单）净化 -->
+  <!-- eslint-disable vue/no-v-html -->
   <span v-if="html" :class="toneClass(tone)" v-html="html"></span>
+  <!-- eslint-enable vue/no-v-html -->
   <Tag v-else-if="column.render === 'tag'" :color="tagColor">
     {{ display }}
   </Tag>
