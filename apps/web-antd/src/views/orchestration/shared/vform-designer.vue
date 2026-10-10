@@ -33,7 +33,7 @@ import {
   paletteGroups,
   parentList,
   parseVForm,
-  removeWidget,
+  removeWidgetSafe,
   stringifyVForm,
   subFormButtons,
   subFormColumns,
@@ -256,7 +256,7 @@ function patchOption(key: string, value: unknown) {
 
 function removeSelected() {
   if (!selectedId.value) return;
-  removeWidget(doc.value.widgetList, selectedId.value);
+  removeWidgetSafe(doc.value.widgetList, selectedId.value);
   selectedId.value = '';
   commit();
 }
@@ -1181,13 +1181,7 @@ function saveCode() {
             />
           </div>
         </div>
-        <Button
-          v-if="!selected.internal"
-          danger
-          block
-          size="small"
-          @click="removeSelected"
-        >
+        <Button danger block size="small" @click="removeSelected">
           移除组件
         </Button>
       </div>

@@ -74,6 +74,7 @@ const columns = [
   { title: '名称', dataIndex: 'name', key: 'name' },
   { title: '编码', dataIndex: 'code', key: 'code', width: 140 },
   { title: '绑定表单', dataIndex: 'formRef', key: 'formRef', width: 140 },
+  { title: '版本', key: 'version', width: 80 },
   { title: '状态', key: 'status', width: 90 },
   { title: '操作', key: 'actions', width: 320 },
 ];
@@ -444,6 +445,11 @@ onMounted(load);
           <code class="text-xs">{{
             (record as WorkflowDefinition).formRef || '—'
           }}</code>
+        </template>
+        <template v-else-if="column.key === 'version'">
+          <Tag color="blue">
+            v{{ (record as WorkflowDefinition).version ?? 0 }}
+          </Tag>
         </template>
         <template v-else-if="column.key === 'status'">
           <Tag

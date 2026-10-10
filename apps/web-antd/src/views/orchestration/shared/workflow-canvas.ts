@@ -33,6 +33,10 @@ export interface WfGraphEdge {
     conditionField?: string;
     conditionOp?: string;
     conditionValue?: string;
+    /** W6：条件分支优先级，数字小者优先 */
+    priority?: number;
+    /** W6：显式默认分支（无条件兜底） */
+    isDefault?: boolean;
   };
 }
 
@@ -386,10 +390,13 @@ function applyVisual(node: Node, data: Record<string, unknown>) {
 }
 
 function edgeLabel(data: Record<string, unknown> | undefined) {
+  if (data?.isDefault) return '默认分支';
   const items = Array.isArray(data?.items) ? data.items : [];
+  const priority = Number(data?.priority || 0);
+  const suffix = priority > 0 ? ` [P${priority}]` : '';
   if (items.length > 0) {
     const combine = String(data?.combine || '').trim();
-    return combine || `${items.length} 条条件`;
+    return `${combine || `${items.length} 条条件`}${suffix}`;
   }
   const field = String(data?.conditionField || '').trim();
   if (!field) return '';
@@ -403,7 +410,7 @@ function edgeLabel(data: Record<string, unknown> | undefined) {
     lt: '<',
     contains: '包含',
   };
-  return `${field} ${symbol[op] || op} ${value}`.trim();
+  return `${field} ${symbol[op] || op} ${value}${suffix}`.trim();
 }
 
 function createMetadata(
@@ -726,6 +733,8 @@ export class WorkflowCanvas {
             conditionField: cell.data?.conditionField || '',
             conditionOp: cell.data?.conditionOp || 'eq',
             conditionValue: cell.data?.conditionValue || '',
+            priority: Number(cell.data?.priority || 0),
+            isDefault: cell.data?.isDefault === true,
           },
         });
         continue;

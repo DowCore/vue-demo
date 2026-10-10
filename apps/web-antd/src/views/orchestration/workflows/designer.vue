@@ -133,11 +133,13 @@ const selected = reactive({
   assigneeFlowKey: undefined as string | undefined,
   multi: 'single' as string | undefined,
   multiRatio: 100,
-  emptyFallback: 'admin',
+  emptyFallback: 'error',
   fieldPermissions: {} as Record<string, string>,
   conditionText: '',
   leaveCondition: emptyBlock(),
   edgeCondition: emptyBlock(),
+  edgePriority: 0,
+  edgeIsDefault: false,
 });
 
 const canvas = shallowRef<null | WorkflowCanvas>(null);
@@ -182,7 +184,8 @@ function typeLabel(type?: string) {
 function assigneePlaceholder(type?: string) {
   if (type === 'user') return '用户名';
   if (type === 'formField') return '表单字段名';
-  if (type === 'manager') return '角色码，留空则用 manager';
+  if (type === 'manager')
+    return '主管角色码，留空默认按角色 manager 在组织树里找';
   return '角色码';
 }
 
@@ -232,7 +235,7 @@ function fillSelected(payload: WfSelection) {
   selected.assigneeFlowKey = (data.assigneeFlowKey as string) || undefined;
   selected.multi = (data.multi as string) || 'single';
   selected.multiRatio = Number(data.multiRatio || 100);
-  selected.emptyFallback = (data.emptyFallback as string) || 'admin';
+  selected.emptyFallback = (data.emptyFallback as string) || 'error';
   selected.fieldPermissions =
     data.fieldPermissions && typeof data.fieldPermissions === 'object'
       ? { ...(data.fieldPermissions as Record<string, string>) }
@@ -254,6 +257,8 @@ function fillSelected(payload: WfSelection) {
       value: String(data.conditionValue || ''),
     },
   );
+  selected.edgePriority = Number(data.priority || 0);
+  selected.edgeIsDefault = data.isDefault === true;
   if (payload.kind) panelCollapsed.value = false;
   nextTick(() => {
     applying = false;
@@ -273,7 +278,7 @@ function pushSelection() {
       assigneeFlowKey: selected.assigneeFlowKey || '',
       multi: selected.multi,
       multiRatio: selected.multiRatio,
-      emptyFallback: selected.emptyFallback || 'admin',
+      emptyFallback: selected.emptyFallback || 'error',
       fieldPermissions: { ...selected.fieldPermissions },
       conditionText: selected.conditionText,
       leaveCondition: selected.leaveCondition,
@@ -288,6 +293,8 @@ function pushSelection() {
       conditionField: '',
       conditionOp: '',
       conditionValue: '',
+      priority: Number(selected.edgePriority || 0),
+      isDefault: selected.edgeIsDefault === true,
     });
   }
   dirty.value = true;
@@ -420,6 +427,7 @@ onBeforeUnmount(() => {
           <Tag :color="wf?.status === 1 ? 'success' : 'default'">
             {{ wf?.status === 1 ? '已发布' : '草稿' }}
           </Tag>
+          <Tag v-if="wf && wf.version > 0" color="blue">v{{ wf.version }}</Tag>
           <Tag v-if="dirty" color="orange">未保存</Tag>
           <span class="text-muted-foreground font-mono text-xs">{{
             wf?.code
@@ -644,10 +652,31 @@ onBeforeUnmount(() => {
             layout="vertical"
             size="small"
           >
+            <Form.Item label="分支优先级">
+              <Input
+                :value="String(selected.edgePriority ?? 0)"
+                type="number"
+                @update:value="(v) => (selected.edgePriority = Number(v) || 0)"
+              />
+              <p class="text-muted-foreground mt-1 text-xs leading-relaxed">
+                多条条件出线时按此排序，数字小者先判断。同一节点的条件边建议配成互不相同的值（0
+                表示最低）。
+              </p>
+            </Form.Item>
+            <Form.Item label="默认分支">
+              <Switch
+                :checked="selected.edgeIsDefault"
+                size="small"
+                @update:checked="(v) => (selected.edgeIsDefault = Boolean(v))"
+              />
+              <p class="text-muted-foreground mt-1 text-xs leading-relaxed">
+                开启后，其他条件都不成立时走这条线。等价于不写条件的兜底分支。
+              </p>
+            </Form.Item>
             <WorkflowConditionEditor
               :model-value="selected.edgeCondition"
               :flow-options="flowOptions"
-              hint="多条出线时按这里选择。不添加条件就是默认分支。组合式留空表示全部并且。"
+              hint="多条出线时按优先级排序判断。不添加条件就是默认分支。组合式留空表示全部并且。"
               @update:model-value="(v) => (selected.edgeCondition = v)"
             />
           </Form>
@@ -725,6 +754,12 @@ onBeforeUnmount(() => {
                   class="font-mono"
                   :placeholder="assigneePlaceholder(selected.assigneeType)"
                 />
+                <p
+                  v-if="selected.assigneeType === 'manager'"
+                  class="text-muted-foreground mt-1 text-xs leading-relaxed"
+                >
+                  按发起人所在组织单元解析直属主管：优先本级，找不到再沿父级向上；拥有该角色的成员即为主管。
+                </p>
               </Form.Item>
             </template>
             <template v-if="selected.nodeType === 'approver'">
@@ -766,9 +801,9 @@ onBeforeUnmount(() => {
                   v-model:value="selected.emptyFallback"
                   class="w-full"
                   :options="[
+                    { label: '提示报错并阻断（推荐）', value: 'error' },
                     { label: '自动转交管理员 (admin)', value: 'admin' },
                     { label: '自动跳过该节点', value: 'skip' },
-                    { label: '提示报错并阻断', value: 'error' },
                   ]"
                 />
               </Form.Item>

@@ -27,6 +27,7 @@ import {
   getFormDefinitionApi,
   getFormDefinitionsApi,
   publishFormDefinitionApi,
+  resyncCatalogFromResourceApi,
 } from '#/api/saas/orchestration';
 import FormPreviewModal from '#/views/orchestration/shared/form-preview-modal.vue';
 
@@ -62,8 +63,9 @@ const columns = [
   { title: '名称', dataIndex: 'name', key: 'name' },
   { title: '编码', dataIndex: 'code', key: 'code', width: 160 },
   { title: '字段数', key: 'fields', width: 90 },
+  { title: '版本', key: 'version', width: 80 },
   { title: '状态', key: 'status', width: 100 },
-  { title: '操作', key: 'actions', width: 280 },
+  { title: '操作', key: 'actions', width: 340 },
 ];
 
 async function load() {
@@ -146,6 +148,21 @@ async function publish(row: FormDefinition) {
   await publishFormDefinitionApi(row.id);
   message.success('已发布，可在 OA / 报表中通过 formRef 选用');
   await load();
+}
+
+async function resync(row: FormDefinition) {
+  Modal.confirm({
+    title: `从资源「${row.sourceResourceCode}」重新同步字段目录？`,
+    content:
+      '会把字段目录与资源表的列重新对齐，并按列表单的拍平字段；布局树不受影响。',
+    async onOk() {
+      const updated = await resyncCatalogFromResourceApi(row.id);
+      message.success(
+        `已同步，共 ${updated?.fieldCatalog?.length ?? 0} 个字段`,
+      );
+      await load();
+    },
+  });
 }
 
 async function remove(row: FormDefinition) {
@@ -241,6 +258,11 @@ onMounted(load);
         <template v-if="column.key === 'fields'">
           {{ (record as FormDefinition).schema?.fields?.length || 0 }}
         </template>
+        <template v-else-if="column.key === 'version'">
+          <Tag color="blue">
+            v{{ (record as FormDefinition).schemaVersion ?? 0 }}
+          </Tag>
+        </template>
         <template v-else-if="column.key === 'status'">
           <Tag
             :color="
@@ -276,6 +298,14 @@ onMounted(load);
                 发布
               </Button>
             </AccessControl>
+            <Button
+              v-if="(record as FormDefinition).sourceResourceCode"
+              size="small"
+              type="link"
+              @click="resync(record as FormDefinition)"
+            >
+              同步字段
+            </Button>
             <AccessControl :codes="['Orchestration.Forms.Delete']" type="code">
               <Button
                 danger

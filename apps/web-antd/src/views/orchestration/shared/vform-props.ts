@@ -93,6 +93,12 @@ const common: VFormPropField[] = [
   { group: '高级属性', key: 'name', label: '唯一名称', kind: 'text' },
   {
     group: '高级属性',
+    key: 'columnName',
+    label: '落库列名',
+    kind: 'text',
+  },
+  {
+    group: '高级属性',
     key: 'customClass',
     label: '自定义CSS样式',
     kind: 'text',

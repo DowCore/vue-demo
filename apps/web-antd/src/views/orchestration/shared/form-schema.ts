@@ -71,6 +71,7 @@ function normalizeField(
     : [];
   return {
     field,
+    columnName: raw.columnName ? String(raw.columnName) : undefined,
     title: String(raw.title || field),
     control,
     span: fieldSpan(raw.span, control),
@@ -192,6 +193,7 @@ function normalizeWidget(
     id: String(raw.id || newWidgetId('f')),
     kind: 'field',
     field,
+    columnName: raw.columnName ? String(raw.columnName) : undefined,
     title: String(raw.title || field),
     control,
     span: Number(raw.span) > 0 ? Number(raw.span) : 24,
@@ -204,6 +206,27 @@ function normalizeWidget(
     readonlyOnUpdate: !!raw.readonlyOnUpdate,
     requiredOnCreate: !!raw.requiredOnCreate,
     requiredOnUpdate: !!raw.requiredOnUpdate,
+    // F2 对齐：以下属性原先在此被静默丢弃，导致 layout → fields 拍平时规则/明细约束丢失
+    rules:
+      raw.rules && typeof raw.rules === 'object' ? { ...raw.rules } : undefined,
+    minItems:
+      raw.minItems === undefined || raw.minItems === null
+        ? undefined
+        : Number(raw.minItems),
+    maxItems:
+      raw.maxItems === undefined || raw.maxItems === null
+        ? undefined
+        : Number(raw.maxItems),
+    treeChildrenField: raw.treeChildrenField
+      ? String(raw.treeChildrenField)
+      : undefined,
+    dependencies: Array.isArray(raw.dependencies)
+      ? raw.dependencies
+      : undefined,
+    controlProps:
+      raw.controlProps && typeof raw.controlProps === 'object'
+        ? { ...raw.controlProps }
+        : undefined,
     children: [],
   };
 }
@@ -272,6 +295,7 @@ export function migrateFieldsToLayout(fields: FormFieldDef[]): FormWidgetDef[] {
           id: newWidgetId('f'),
           kind: 'field' as const,
           field: f.field,
+          columnName: f.columnName,
           title: f.title,
           control: BASIC_CONTROLS.has(f.control) ? f.control : 'input',
           span: f.span || 12,
@@ -281,6 +305,8 @@ export function migrateFieldsToLayout(fields: FormFieldDef[]): FormWidgetDef[] {
           visibleOnDetail: f.visibleOnDetail,
           requiredOnCreate: f.requiredOnCreate,
           requiredOnUpdate: f.requiredOnUpdate,
+          rules: f.rules,
+          controlProps: f.controlProps,
           children: [],
         })),
     },
@@ -294,13 +320,19 @@ export function migrateFieldsToLayout(fields: FormFieldDef[]): FormWidgetDef[] {
         title: f.title,
         field: f.field,
         hidden: false,
+        minItems: f.minItems,
+        maxItems: f.maxItems,
+        treeChildrenField: f.treeChildrenField,
         children: (f.children || []).map((c) => ({
           id: newWidgetId('f'),
           kind: 'field' as const,
           field: c.field,
+          columnName: c.columnName,
           title: c.title,
           control: c.control || 'input',
           span: 24,
+          rules: c.rules,
+          controlProps: c.controlProps,
           children: [],
         })),
       })),
@@ -320,6 +352,8 @@ export function flattenLayout(layout: FormWidgetDef[]): FormFieldDef[] {
             title: node.title || name,
             control: node.container === 'subform' ? 'list' : 'table',
             span: 24,
+            minItems: node.minItems,
+            maxItems: node.maxItems,
             children: (node.children || [])
               .filter(
                 (c): c is FormWidgetDef & { field: string } =>
@@ -327,12 +361,15 @@ export function flattenLayout(layout: FormWidgetDef[]): FormFieldDef[] {
               )
               .map((c) => ({
                 field: c.field,
+                columnName: c.columnName,
                 title: c.title || c.field,
                 control: c.control || 'input',
                 span: 12,
                 placeholder: c.placeholder,
                 requiredOnCreate: c.requiredOnCreate,
                 requiredOnUpdate: c.requiredOnUpdate,
+                rules: c.rules,
+                controlProps: c.controlProps,
               })),
           });
         } else {
@@ -341,6 +378,7 @@ export function flattenLayout(layout: FormWidgetDef[]): FormFieldDef[] {
       } else if (node.field) {
         fields.push({
           field: node.field,
+          columnName: node.columnName,
           title: node.title || node.field,
           control: node.control || 'input',
           span: node.span || 12,
@@ -352,6 +390,12 @@ export function flattenLayout(layout: FormWidgetDef[]): FormFieldDef[] {
           readonlyOnUpdate: node.readonlyOnUpdate,
           requiredOnCreate: node.requiredOnCreate,
           requiredOnUpdate: node.requiredOnUpdate,
+          rules: node.rules,
+          minItems: node.minItems,
+          maxItems: node.maxItems,
+          treeChildrenField: node.treeChildrenField,
+          dependencies: node.dependencies,
+          controlProps: node.controlProps,
         });
       }
     }

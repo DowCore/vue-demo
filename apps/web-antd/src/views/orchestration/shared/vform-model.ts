@@ -599,6 +599,78 @@ export function removeWidget(list: VFormWidget[], id: string): boolean {
   return false;
 }
 
+/** 找到直接包含 id 的那个组件（即它的父节点）。 */
+export function findParentWidget(
+  list: VFormWidget[],
+  id: string,
+): null | VFormWidget {
+  for (const widget of list) {
+    const nests = [
+      ...(widget.widgetList || []),
+      ...(widget.cols || []),
+      ...(widget.tabs || []),
+      ...(widget.rows || []).flatMap((row) => row.cols || []),
+    ];
+    if (nests.some((node) => node.id === id)) return widget;
+    const hit = findParentWidget(nests, id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * 删除组件，并保持容器结构合法。
+ *
+ * `removeWidget` 是纯递归删除，直接删"内部单元格"会留下非法容器
+ * （0 列的栅格 / 0 页签的标签页 / 缺格的表格），这些空壳在画布上无法再被选中，
+ * 用户就只能"清空画布"。这里补上结构约束：
+ * - 栅格列：删的是最后一列时，连整个栅格一起删；
+ * - 标签页：删的是最后一个页签时，连整个标签页一起删；
+ * - 表格单元格：整列一起删（保证每行等宽）；只剩一列时连整个表格一起删。
+ */
+export function removeWidgetSafe(list: VFormWidget[], id: string): boolean {
+  const target = findWidget(list, id);
+  if (!target) return false;
+
+  if (target.type === 'grid-col') {
+    const grid = findParentWidget(list, id);
+    if (grid && (grid.cols || []).length <= 1) {
+      return removeWidget(list, grid.id);
+    }
+    return removeWidget(list, id);
+  }
+
+  if (target.type === 'tab-pane') {
+    const tab = findParentWidget(list, id);
+    if (tab && (tab.tabs || []).length <= 1) {
+      return removeWidget(list, tab.id);
+    }
+    return removeWidget(list, id);
+  }
+
+  if (target.type === 'table-cell') {
+    const table = findParentWidget(list, id);
+    const rows = table?.rows || [];
+    const rowIndex = rows.findIndex((row) =>
+      row.cols.some((cell) => cell.id === id),
+    );
+    if (table && rowIndex !== -1) {
+      if ((rows[0]?.cols || []).length <= 1) {
+        return removeWidget(list, table.id);
+      }
+      const colIndex = rows[rowIndex]!.cols.findIndex((cell) => cell.id === id);
+      for (const row of rows) {
+        if (colIndex !== -1 && colIndex < row.cols.length) {
+          row.cols.splice(colIndex, 1);
+        }
+      }
+      return true;
+    }
+  }
+
+  return removeWidget(list, id);
+}
+
 const controlMap: Record<string, string> = {
   input: 'input',
   password: 'password',
@@ -796,6 +868,7 @@ function scalarField(w: VFormWidget): FormFieldDef {
     : undefined;
   return {
     field: String(w.options.name),
+    columnName: w.options.columnName ? String(w.options.columnName) : undefined,
     title: String(w.options.label || w.options.name),
     control: controlMap[w.type] || 'input',
     span: 24,

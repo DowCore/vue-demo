@@ -82,6 +82,12 @@ onMounted(load);
   <Page :loading="loading" title="表单设计">
     <template #extra>
       <Space>
+        <span
+          v-if="form && form.schemaVersion > 0"
+          class="text-xs text-muted-foreground"
+        >
+          结构版本 v{{ form.schemaVersion }}
+        </span>
         <Button type="text" @click="router.push('/orchestration/forms')">
           返回列表
         </Button>

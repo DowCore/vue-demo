@@ -837,6 +837,8 @@ export interface FormFieldDependencyDef {
 
 export interface FormFieldDef {
   field: string;
+  /** 落库列名（F5）：与 field 解耦的物理列映射；为空则按 field 处理 */
+  columnName?: string;
   title: string;
   control: string;
   span?: number;
@@ -871,6 +873,8 @@ export interface FormWidgetDef {
   hidden?: boolean;
   children?: FormWidgetDef[];
   field?: string;
+  /** 落库列名（F5）：与 field 解耦的物理列映射；为空则按 field 处理 */
+  columnName?: string;
   control?: string;
   span?: number;
   placeholder?: string;
@@ -881,6 +885,14 @@ export interface FormWidgetDef {
   readonlyOnUpdate?: boolean;
   requiredOnCreate?: boolean;
   requiredOnUpdate?: boolean;
+  /** 字段校验规则（F2 补齐：原先缺失，拍平时规则会丢失） */
+  rules?: FormFieldRuleDef;
+  /** 明细最少行数（F2 补齐） */
+  minItems?: number;
+  /** 明细最多行数（F2 补齐） */
+  maxItems?: number;
+  /** tree 子节点数组字段名，默认 children（F2 补齐） */
+  treeChildrenField?: string;
   dependencies?: FormFieldDependencyDef[];
   controlProps?: Record<string, any>;
 }
@@ -1217,6 +1229,8 @@ export interface FormDefinition {
   sourceResourceCode?: string;
   schema: FormDef;
   fieldCatalog: ListColumnDef[];
+  /** 表单结构版本号（F4）：每次发布 +1，用于流程实例固化表单快照 */
+  schemaVersion: number;
   creationTime?: string;
 }
 
@@ -1277,6 +1291,16 @@ export function publishFormDefinitionApi(id: string) {
   );
 }
 
+/**
+ * 从来源资源重新同步字段目录（F7）。
+ * 资源表结构变化后，把字段目录/扁平字段与资源列重新对齐，不改动布局树。
+ */
+export function resyncCatalogFromResourceApi(id: string) {
+  return requestClient.post<FormDefinition>(
+    `/api/orchestration/forms/${id}/resync-catalog`,
+  );
+}
+
 /** 已发布表单下拉（报表 / OA formRef） */
 export function getPublishedFormLookupApi(filter?: string) {
   return requestClient.get<{ items: FormDefinitionLookup[] }>(
@@ -1302,6 +1326,8 @@ export interface WorkflowDefinition {
   processJson: string;
   beforeStartFlowKey?: string;
   afterEndFlowKey?: string;
+  /** 流程定义版本号（W9）：每次发布 +1，实例会固化启动时的版本 */
+  version: number;
   creationTime?: string;
 }
 
@@ -1390,6 +1416,10 @@ export interface WorkflowInstance {
   processSnapshotJson?: string;
   historyJson?: string;
   tasks: WorkflowTask[];
+  /** 启动时固化的流程定义版本（W9） */
+  definitionVersion?: number;
+  /** 启动时固化的表单结构版本（W9） */
+  formSchemaVersion?: number;
 }
 
 export function startWorkflowApi(data: { code: string; recordJson?: string }) {

@@ -73,6 +73,20 @@ const errorText = ref('');
 const opt = computed(() => props.widget.options || {});
 const name = computed(() => String(opt.value.name || props.widget.id));
 
+/**
+ * 容器角标文案。只对"自己渲染成 vf-node"的容器有意义——
+ * 栅格列 / 表格单元格 / 标签页（internal=true）由父容器直接渲染，不会走到这里。
+ */
+const CONTAINER_TAGS: Record<string, string> = {
+  card: '卡片',
+  grid: '栅格',
+  'sub-form': '子表单',
+  tab: '标签页',
+  table: '表格',
+  tree: '树形',
+};
+const containerTag = computed(() => CONTAINER_TAGS[props.widget.type] || '');
+
 function eventCtx(value?: unknown, oldValue?: unknown) {
   return { value, oldValue, formModel: props.model };
 }
@@ -264,6 +278,17 @@ function labelStyle() {
       <button type="button" @click="emit('command', 'copy')">复制</button>
       <button type="button" @click="emit('command', 'delete')">删除</button>
     </div>
+    <!-- 容器抓手：栅格/表格/标签页内部会被子元素吞掉点击，靠它选中容器本身 -->
+    <button
+      v-if="designer && containerTag"
+      class="vf-container-tag"
+      :class="{ 'is-active': selected }"
+      type="button"
+      :title="`选中${containerTag}容器（可直接删除）`"
+      @click.stop="emit('select', widget.id)"
+    >
+      {{ containerTag }}
+    </button>
     <!-- 栅格 -->
     <div
       v-if="widget.type === 'grid'"
@@ -294,6 +319,15 @@ function labelStyle() {
         @dragleave="overId = ''"
         @drop="onContainerDrop($event, col.id)"
       >
+        <button
+          v-if="designer && selectedId === col.id"
+          class="vf-cell-delete"
+          type="button"
+          title="删除该列（最后一列会连同整个栅格一起删除）"
+          @click.stop="emit('command', 'delete')"
+        >
+          删除
+        </button>
         <VFormNode
           v-for="child in col.widgetList || []"
           :key="child.id"
@@ -338,6 +372,15 @@ function labelStyle() {
           @dragleave="overId = ''"
           @drop="onContainerDrop($event, cell.id)"
         >
+          <button
+            v-if="designer && selectedId === cell.id"
+            class="vf-cell-delete"
+            type="button"
+            title="删除该列（最后一列会连同整个表格一起删除）"
+            @click.stop="emit('command', 'delete')"
+          >
+            删除
+          </button>
           <VFormNode
             v-for="child in cell.widgetList || []"
             :key="child.id"
@@ -365,6 +408,7 @@ function labelStyle() {
         :tab="pane.options?.label || '标签'"
       >
         <div
+          class="vf-pane"
           :class="{
             'is-selected': designer && selectedId === pane.id,
             'is-over': overId === pane.id,
@@ -378,6 +422,15 @@ function labelStyle() {
           @dragleave="overId = ''"
           @drop="onContainerDrop($event, pane.id)"
         >
+          <button
+            v-if="designer && selectedId === pane.id"
+            class="vf-cell-delete"
+            type="button"
+            title="删除该页签（最后一个页签会连同整个标签页一起删除）"
+            @click.stop="emit('command', 'delete')"
+          >
+            删除
+          </button>
           <VFormNode
             v-for="child in pane.widgetList || []"
             :key="child.id"
@@ -732,12 +785,50 @@ function labelStyle() {
   border: 0;
 }
 
+/* 容器抓手：点它选中容器本身（子元素会 stopPropagation，否则选不中） */
+.vf-container-tag {
+  position: absolute;
+  top: -16px;
+  left: 0;
+  z-index: 6;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #fff;
+  cursor: pointer;
+  background: #909399;
+  border: 0;
+  border-radius: 3px;
+}
+
+.vf-container-tag:hover,
+.vf-container-tag.is-active {
+  background: #409eff;
+}
+
+/* 内部单元格（栅格列 / 表格单元格 / 标签页）的删除按钮 */
+.vf-cell-delete {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 6;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  color: #fff;
+  cursor: pointer;
+  background: #f56c6c;
+  border: 0;
+  border-radius: 3px;
+}
+
 .vf-node.is-selected {
   outline: 2px solid #409eff;
 }
 
 .vf-col.is-selected,
-.vf-cell.is-selected {
+.vf-cell.is-selected,
+.vf-pane.is-selected {
   outline: 2px solid #409eff;
   outline-offset: -2px;
 }
@@ -747,7 +838,9 @@ function labelStyle() {
 }
 
 .vf-node.is-designer .vf-col,
-.vf-node.is-designer .vf-cell {
+.vf-node.is-designer .vf-cell,
+.vf-node.is-designer .vf-pane {
+  position: relative;
   min-height: 48px;
   padding: 6px;
   border: 1px dashed #dcdfe6;
