@@ -4,7 +4,7 @@
  * 容器：grid-col、table-cell、tab、card、sub-form
  * 字段：开源 basicFields + advancedFields
  */
-import type { DeptTreeNode } from './org-options';
+import type { OptionNode } from './option-source';
 import type { VFormWidget } from './vform-model';
 
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue';
@@ -35,8 +35,14 @@ import {
   isOptionalByDependencies,
   isRequiredByDependencies,
 } from './form-dependencies';
-import { loadDeptTree, loadUserOptions } from './org-options';
+import {
+  isOptionWidget,
+  resolveOptionSource,
+  templateFields,
+} from './option-source';
+import { safeJsonStringify } from './safe-json';
 import { sanitizeHtml } from './sanitize-html';
+import { useOptionSources } from './use-option-sources';
 import { runWidgetEvent, validationPattern } from './vform-events';
 
 defineOptions({ name: 'VFormNode' });
@@ -67,12 +73,36 @@ const emit = defineEmits<{
 
 const VFormRepeat = defineAsyncComponent(() => import('./vform-repeat.vue'));
 
-const userOptions = ref<{ label: string; value: string }[]>([]);
-const deptTree = ref<DeptTreeNode[]>([]);
 const overId = ref('');
 const errorText = ref('');
 const opt = computed(() => props.widget.options || {});
 const name = computed(() => String(opt.value.name || props.widget.id));
+
+/**
+ * 选项数据源：静态选项 / 内置（用户、部门）/ 逻辑编排，三种来源统一在这里取数。
+ * 用户、部门不再各自硬编码调身份接口，而是作为内置提供者走同一条链路。
+ */
+const optionSource = computed(() =>
+  resolveOptionSource(props.widget.type, opt.value),
+);
+const {
+  errors: optionErrors,
+  nodes: optionNodes,
+  refresh: refreshOptions,
+} = useOptionSources(() => [
+  {
+    key: 'options',
+    optionItems: opt.value.optionItems,
+    scope: { field: name.value, form: props.model },
+    source: optionSource.value,
+  },
+]);
+const resolvedOptions = computed<OptionNode[]>(
+  () => optionNodes.value.options || [],
+);
+/** ant 组件接受的选项形状；节点 value 类型放开（可能来自流程出参） */
+const antOptions = computed<any[]>(() => resolvedOptions.value);
+const optionError = computed(() => optionErrors.value.options || '');
 
 /**
  * 容器角标文案。只对"自己渲染成 vf-node"的容器有意义——
@@ -132,20 +162,28 @@ function onButtonClick(event: MouseEvent) {
 }
 
 onMounted(() => {
-  if (props.widget.type === 'user-picker') {
-    loadUserOptions().then((items) => {
-      userOptions.value = items;
-    });
-  }
-  if (props.widget.type === 'dept-picker') {
-    loadDeptTree().then((items) => {
-      deptTree.value = items;
-    });
-  }
+  if (isOptionWidget(props.widget.type)) void refreshOptions();
   if (props.designer) return;
   runWidgetEvent(opt.value.onCreated, eventCtx(props.model[name.value]));
   runWidgetEvent(opt.value.onMounted, eventCtx(props.model[name.value]));
 });
+
+/**
+ * 数据源变化或入参引用字段变化时重新取数。
+ * 只监听被 `{{字段}}` 真正引用的字段；是否真的发请求由入参指纹决定。
+ */
+watch(
+  () =>
+    [
+      safeJsonStringify(optionSource.value),
+      ...templateFields(optionSource.value.params).map((field) =>
+        safeJsonStringify(props.model[field]),
+      ),
+    ].join('|'),
+  () => {
+    if (isOptionWidget(props.widget.type)) void refreshOptions();
+  },
+);
 
 watch(
   () => props.model,
@@ -592,8 +630,8 @@ function labelStyle() {
           @update:value="patch"
         >
           <Radio
-            v-for="item in opt.optionItems || []"
-            :key="item.value"
+            v-for="item in resolvedOptions"
+            :key="String(item.value)"
             :value="item.value"
           >
             {{ item.label }}
@@ -602,12 +640,7 @@ function labelStyle() {
         <Checkbox.Group
           v-else-if="widget.type === 'checkbox'"
           :disabled="fieldDisabled"
-          :options="
-            (opt.optionItems || []).map((i: any) => ({
-              label: i.label,
-              value: i.value,
-            }))
-          "
+          :options="antOptions"
           :value="(model[name] as any) || []"
           @update:value="patch"
         />
@@ -617,12 +650,7 @@ function labelStyle() {
           :allow-clear="opt.clearable !== false"
           :disabled="fieldDisabled"
           :mode="opt.multiple ? 'multiple' : undefined"
-          :options="
-            (opt.optionItems || []).map((i: any) => ({
-              label: i.label,
-              value: i.value,
-            }))
-          "
+          :options="antOptions"
           :placeholder="opt.placeholder"
           show-search
           :value="(model[name] as any) ?? undefined"
@@ -696,7 +724,7 @@ function labelStyle() {
           show-search
           :disabled="fieldDisabled"
           :mode="opt.multiple ? 'multiple' : undefined"
-          :options="userOptions"
+          :options="antOptions"
           :placeholder="opt.placeholder || '选择用户'"
           :value="(model[name] as any) ?? undefined"
           @update:value="patch"
@@ -708,9 +736,14 @@ function labelStyle() {
           show-search
           tree-default-expand-all
           :disabled="fieldDisabled"
+          :field-names="{
+            children: 'children',
+            label: 'label',
+            value: 'value',
+          }"
           :multiple="!!opt.multiple"
           :placeholder="opt.placeholder || '选择部门'"
-          :tree-data="deptTree"
+          :tree-data="antOptions"
           :value="(model[name] as any) ?? undefined"
           @update:value="patch"
         />
@@ -718,7 +751,7 @@ function labelStyle() {
           v-else-if="widget.type === 'cascader'"
           class="w-full"
           :disabled="fieldDisabled"
-          :options="opt.optionItems || []"
+          :options="antOptions"
           :placeholder="opt.placeholder"
           @update:value="patch"
         />
@@ -736,6 +769,9 @@ function labelStyle() {
           <div v-if="widget.type === 'picture-upload'">上传</div>
           <Button v-else size="small">选择文件</Button>
         </Upload>
+        <div v-if="optionError" class="mt-1 text-xs text-red-500">
+          选项数据源：{{ optionError }}
+        </div>
         <div v-if="errorText" class="mt-1 text-xs text-red-500">
           {{ errorText }}
         </div>

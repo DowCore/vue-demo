@@ -5,6 +5,7 @@
  */
 import type { FormFieldDef } from '#/api/saas/orchestration';
 
+import { resolveOptionSource, shouldEmitOptionSource } from './option-source';
 import { validationPattern } from './vform-events';
 
 export interface VFormOptionItem {
@@ -654,11 +655,12 @@ export function removeWidgetSafe(list: VFormWidget[], id: string): boolean {
     const rowIndex = rows.findIndex((row) =>
       row.cols.some((cell) => cell.id === id),
     );
-    if (table && rowIndex !== -1) {
+    const owner = rowIndex === -1 ? undefined : rows[rowIndex];
+    if (table && owner) {
       if ((rows[0]?.cols || []).length <= 1) {
         return removeWidget(list, table.id);
       }
-      const colIndex = rows[rowIndex]!.cols.findIndex((cell) => cell.id === id);
+      const colIndex = owner.cols.findIndex((cell) => cell.id === id);
       for (const row of rows) {
         if (colIndex !== -1 && colIndex < row.cols.length) {
           row.cols.splice(colIndex, 1);
@@ -866,6 +868,11 @@ function scalarField(w: VFormWidget): FormFieldDef {
   const dependencies = Array.isArray(w.options.dependencies)
     ? w.options.dependencies
     : undefined;
+  // 只在显式配置过数据源、或控件本身带内置提供者（用户/部门）时才写进定义，
+  // 避免给存量表单塞一堆无意义的 { kind: 'static' }。
+  const optionSource = shouldEmitOptionSource(w.type, w.options)
+    ? resolveOptionSource(w.type, w.options)
+    : undefined;
   return {
     field: String(w.options.name),
     columnName: w.options.columnName ? String(w.options.columnName) : undefined,
@@ -879,6 +886,7 @@ function scalarField(w: VFormWidget): FormFieldDef {
     dependencies,
     controlProps: {
       ...(options ? { options } : {}),
+      ...(optionSource ? { optionSource } : {}),
       ...(w.options.multiple ? { multiple: true } : {}),
       ...(w.options.orgScope ? { orgScope: w.options.orgScope } : {}),
     },

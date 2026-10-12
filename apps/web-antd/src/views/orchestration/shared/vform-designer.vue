@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import type { OptionDataSource, OptionSourceKind } from './option-source';
 import type { VFormDocument, VFormWidget } from './vform-model';
 
 /**
@@ -23,6 +24,15 @@ import {
 
 import { getReusableFlowLookupApi } from '#/api/saas/orchestration';
 
+import {
+  builtinProviderFor,
+  countNodes,
+  describeNodes,
+  isOptionWidget,
+  loadOptionNodes,
+  normalizeOptionSource,
+  resolveOptionSource,
+} from './option-source';
 import {
   appendSubFormColumn,
   cloneWidgetTree,
@@ -378,6 +388,150 @@ function removeOption(index: number) {
   patchOption('optionItems', items);
 }
 
+/* ------------------------------ 选项数据源 ------------------------------ */
+
+/** 选项类控件（含用户 / 部门）都可能绑定数据源 */
+const hasOptionSource = computed(
+  () => !!selected.value && isOptionWidget(selected.value.type),
+);
+
+/** 当前生效的数据源（未配置时给出控件默认值） */
+const optionSource = computed(() =>
+  selected.value
+    ? resolveOptionSource(selected.value.type, selected.value.options)
+    : null,
+);
+
+const sourceKinds: { label: string; value: OptionSourceKind }[] = [
+  { label: '静态选项', value: 'static' },
+  { label: '平台内置', value: 'builtin' },
+  { label: '逻辑编排', value: 'flow' },
+];
+
+const providerOptions = [
+  { label: '用户', value: 'user' },
+  { label: '部门', value: 'dept' },
+];
+
+/** 切换来源时只保留该来源用得上的字段，避免落库里留一堆无关配置 */
+function pruneSource(source: OptionDataSource): OptionDataSource {
+  if (source.kind === 'static') return { kind: 'static' };
+  if (source.kind === 'builtin') {
+    return {
+      kind: 'builtin',
+      ...(source.provider ? { provider: source.provider } : {}),
+    };
+  }
+  return {
+    kind: 'flow',
+    ...(source.flowKey ? { flowKey: source.flowKey } : {}),
+    ...(source.params ? { params: source.params } : {}),
+    ...(source.labelField ? { labelField: source.labelField } : {}),
+    ...(source.valueField ? { valueField: source.valueField } : {}),
+    ...(source.childrenField ? { childrenField: source.childrenField } : {}),
+    ...(source.parentField ? { parentField: source.parentField } : {}),
+    ...(source.rootValue ? { rootValue: source.rootValue } : {}),
+  };
+}
+
+/** 合并式写入数据源；写前先规范化与剪枝，清掉空串等无效键 */
+function patchOptionSource(patch: Record<string, unknown>) {
+  if (!selected.value) return;
+  const widget = selected.value;
+  const current =
+    normalizeOptionSource(widget.options.dataSource) ??
+    resolveOptionSource(widget.type, widget.options);
+  const merged = pruneSource(
+    normalizeOptionSource({ ...current, ...patch }) ?? current,
+  );
+  // 内置来源缺提供者时回落到控件默认值（用户 / 部门）
+  const fallbackProvider = builtinProviderFor(widget.type);
+  if (merged.kind === 'builtin' && !merged.provider && fallbackProvider) {
+    merged.provider = fallbackProvider;
+  }
+  patchOption('dataSource', merged);
+}
+
+/** 清掉数据源配置，回到控件默认行为 */
+function resetOptionSource() {
+  if (!selected.value) return;
+  const next = { ...selected.value.options };
+  delete next.dataSource;
+  selected.value.options = next;
+  commit();
+}
+
+/** 入参映射以「键值对列表」编辑，落库仍是对象 */
+const paramRows = computed(() =>
+  Object.entries(optionSource.value?.params ?? {}).map(([key, value]) => ({
+    key,
+    value,
+  })),
+);
+
+function writeParamRows(rows: { key: string; value: string }[]) {
+  const params: Record<string, string> = {};
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (!key) continue;
+    params[key] = row.value;
+  }
+  patchOptionSource({
+    params: Object.keys(params).length > 0 ? params : undefined,
+  });
+}
+
+function addParam() {
+  writeParamRows([...paramRows.value, { key: '', value: '' }]);
+}
+
+function patchParam(index: number, key: 'key' | 'value', value: string) {
+  writeParamRows(
+    paramRows.value.map((row, i) =>
+      i === index ? { ...row, [key]: value } : row,
+    ),
+  );
+}
+
+function removeParam(index: number) {
+  writeParamRows(paramRows.value.filter((_item, i) => i !== index));
+}
+
+/** 入参模板提示串。写成常量：模板里直接写 `{{...}}` 会被 Vue 当作插值。 */
+const paramTemplateHint = '{{字段名}}';
+
+const testingSource = ref(false);
+
+/** 试加载：直接调一次数据源，把条数与前几项回显，省得靠发布后才能验证 */
+async function testOptionSource() {
+  const widget = selected.value;
+  if (!widget) return;
+  testingSource.value = true;
+  try {
+    const result = await loadOptionNodes({
+      optionItems: widget.options.optionItems,
+      scope: {
+        field: String(widget.options.name || widget.id),
+        form: canvasModel.value,
+      },
+      source: resolveOptionSource(widget.type, widget.options),
+    });
+    if (!result.ok) {
+      message.error(result.error);
+      return;
+    }
+    if (result.nodes.length === 0) {
+      message.warning('加载成功，但没有返回任何选项');
+      return;
+    }
+    message.success(
+      `共 ${countNodes(result.nodes)} 项：${describeNodes(result.nodes)}`,
+    );
+  } finally {
+    testingSource.value = false;
+  }
+}
+
 const flowOptions = ref<{ label: string; value: string }[]>([]);
 
 const subColumns = computed(() => {
@@ -406,7 +560,8 @@ function materializeSubForm() {
   commit();
 }
 
-async function loadSubFlows() {
+/** 可复用的已发布流程：子表「数据调入」与选项数据源共用一份列表 */
+async function loadReusableFlows() {
   if (flowOptions.value.length > 0) return;
   try {
     const res = await getReusableFlowLookupApi();
@@ -420,9 +575,13 @@ async function loadSubFlows() {
 }
 
 watch(selected, (widget) => {
-  if (widget?.type !== 'sub-form') return;
-  materializeSubForm();
-  loadSubFlows();
+  if (!widget) return;
+  if (widget.type === 'sub-form') {
+    materializeSubForm();
+    void loadReusableFlows();
+    return;
+  }
+  if (isOptionWidget(widget.type)) void loadReusableFlows();
 });
 
 function writeSubColumns(columns: ReturnType<typeof subFormColumns>) {
@@ -496,11 +655,6 @@ const settingGroups = computed(() =>
 );
 const widgetEvents = computed(() =>
   selected.value ? eventsFor(selected.value.type) : [],
-);
-const hasOptions = computed(() =>
-  ['cascader', 'checkbox', 'radio', 'select'].includes(
-    selected.value?.type || '',
-  ),
 );
 
 function eventFilled(key: string, target: 'form' | 'widget' = 'widget') {
@@ -1045,41 +1199,188 @@ function saveCode() {
             />
           </div>
         </template>
-        <div v-if="hasOptions">
-          <div class="mb-1 flex items-center justify-between font-medium">
-            选项设置
-            <Button size="small" type="link" @click="addOption">添加</Button>
-          </div>
-          <div
-            v-for="(item, i) in selected.options.optionItems || []"
-            :key="i"
-            class="mb-1 flex gap-1"
-          >
-            <Input
+        <template v-if="hasOptionSource && optionSource">
+          <div class="space-y-2">
+            <div class="flex items-center justify-between font-medium">
+              数据源
+              <div class="flex items-center">
+                <Button
+                  size="small"
+                  type="link"
+                  :loading="testingSource"
+                  @click="testOptionSource"
+                >
+                  试加载
+                </Button>
+                <Button size="small" type="link" @click="resetOptionSource">
+                  重置
+                </Button>
+              </div>
+            </div>
+            <p class="text-muted-foreground">
+              级联、下拉与用户/部门共用同一套数据源。绑定逻辑编排后前端会调用它，
+              请确保该流程是只读查询。
+            </p>
+            <Segmented
+              block
               size="small"
-              :value="item.label"
-              @update:value="
-                (v) => patchOptionItem(Number(i), 'label', String(v || ''))
-              "
+              :options="sourceKinds"
+              :value="optionSource.kind"
+              @change="(value: any) => patchOptionSource({ kind: value })"
             />
-            <Input
-              size="small"
-              class="font-mono"
-              :value="String(item.value)"
-              @update:value="
-                (v) => patchOptionItem(Number(i), 'value', String(v || ''))
-              "
-            />
-            <Button
-              danger
-              size="small"
-              type="text"
-              @click="removeOption(Number(i))"
-            >
-              ×
-            </Button>
+
+            <template v-if="optionSource.kind === 'builtin'">
+              <div class="flex items-center gap-2">
+                <span class="text-muted-foreground">提供者</span>
+                <Select
+                  class="flex-1"
+                  size="small"
+                  :options="providerOptions"
+                  :value="optionSource.provider || undefined"
+                  @update:value="
+                    (value) => patchOptionSource({ provider: value })
+                  "
+                />
+              </div>
+            </template>
+
+            <template v-else-if="optionSource.kind === 'flow'">
+              <Select
+                v-if="flowOptions.length"
+                class="w-full"
+                size="small"
+                show-search
+                placeholder="选择已发布流程"
+                :options="flowOptions"
+                :value="optionSource.flowKey || undefined"
+                @update:value="(value) => patchOptionSource({ flowKey: value })"
+              />
+              <Input
+                v-else
+                size="small"
+                placeholder="已发布流程的 flowKey"
+                :value="optionSource.flowKey || ''"
+                @update:value="(value) => patchOptionSource({ flowKey: value })"
+              />
+
+              <div class="text-muted-foreground">出参字段映射</div>
+              <div class="grid grid-cols-2 gap-1">
+                <Input
+                  size="small"
+                  placeholder="label 字段"
+                  :value="optionSource.labelField || ''"
+                  @update:value="
+                    (value) => patchOptionSource({ labelField: value })
+                  "
+                />
+                <Input
+                  size="small"
+                  placeholder="value 字段"
+                  :value="optionSource.valueField || ''"
+                  @update:value="
+                    (value) => patchOptionSource({ valueField: value })
+                  "
+                />
+                <Input
+                  size="small"
+                  placeholder="children 字段"
+                  :value="optionSource.childrenField || ''"
+                  @update:value="
+                    (value) => patchOptionSource({ childrenField: value })
+                  "
+                />
+                <Input
+                  size="small"
+                  placeholder="父级字段（扁平列表组树）"
+                  :value="optionSource.parentField || ''"
+                  @update:value="
+                    (value) => patchOptionSource({ parentField: value })
+                  "
+                />
+              </div>
+
+              <div class="flex items-center justify-between">
+                <span class="text-muted-foreground">
+                  入参（值支持
+                  {{ paramTemplateHint }}
+                  取当前表单字段，被引用字段变化时会自动重新取数）
+                </span>
+                <Button size="small" type="link" @click="addParam">添加</Button>
+              </div>
+              <div
+                v-for="(row, index) in paramRows"
+                :key="index"
+                class="flex gap-1"
+              >
+                <Input
+                  size="small"
+                  placeholder="参数名"
+                  :value="row.key"
+                  @update:value="
+                    (value) =>
+                      patchParam(Number(index), 'key', String(value || ''))
+                  "
+                />
+                <Input
+                  size="small"
+                  class="font-mono"
+                  :placeholder="paramTemplateHint"
+                  :value="row.value"
+                  @update:value="
+                    (value) =>
+                      patchParam(Number(index), 'value', String(value || ''))
+                  "
+                />
+                <Button
+                  danger
+                  size="small"
+                  type="text"
+                  @click="removeParam(Number(index))"
+                >
+                  ×
+                </Button>
+              </div>
+            </template>
+
+            <template v-else>
+              <div class="mb-1 flex items-center justify-between font-medium">
+                选项设置
+                <Button size="small" type="link" @click="addOption">
+                  添加
+                </Button>
+              </div>
+              <div
+                v-for="(item, i) in selected.options.optionItems || []"
+                :key="i"
+                class="mb-1 flex gap-1"
+              >
+                <Input
+                  size="small"
+                  :value="item.label"
+                  @update:value="
+                    (v) => patchOptionItem(Number(i), 'label', String(v || ''))
+                  "
+                />
+                <Input
+                  size="small"
+                  class="font-mono"
+                  :value="String(item.value)"
+                  @update:value="
+                    (v) => patchOptionItem(Number(i), 'value', String(v || ''))
+                  "
+                />
+                <Button
+                  danger
+                  size="small"
+                  type="text"
+                  @click="removeOption(Number(i))"
+                >
+                  ×
+                </Button>
+              </div>
+            </template>
           </div>
-        </div>
+        </template>
         <div v-if="selected.formItemFlag" class="space-y-2">
           <div class="flex items-center justify-between font-medium">
             字段联动

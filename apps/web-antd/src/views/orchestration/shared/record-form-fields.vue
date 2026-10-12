@@ -1,13 +1,11 @@
 <script lang="ts" setup>
-import type { DeptTreeNode } from './org-options';
-
 /**
  * 表单字段基础控件库（被 FormSchemaRenderer 调用）
  * 设计态 designer=true；运行/预览 designer=false，仅按 FormFieldDef JSON 渲染
  */
 import type { FormFieldDef } from '#/api/saas/orchestration';
 
-import { onMounted, ref, watch } from 'vue';
+import { onMounted, watch } from 'vue';
 
 import { IconifyIcon } from '@vben/icons';
 
@@ -39,7 +37,13 @@ import {
 } from './form-dependencies';
 import { isFieldRequired } from './form-validation';
 import { toDatePickerValue } from './format-cell';
-import { loadDeptTree, loadUserOptions } from './org-options';
+import {
+  isOptionWidget,
+  resolveOptionSource,
+  templateFields,
+} from './option-source';
+import { safeJsonStringify } from './safe-json';
+import { useOptionSources } from './use-option-sources';
 
 defineOptions({ name: 'RecordFormFields' });
 
@@ -64,21 +68,86 @@ const emit = defineEmits<{
   'update:modelValue': [value: Record<string, unknown>];
 }>();
 
-const userOptions = ref<{ label: string; value: string }[]>([]);
-const deptTree = ref<DeptTreeNode[]>([]);
+/**
+ * 选项数据源：字段级统一取数（静态 / 内置用户、部门 / 逻辑编排）。
+ * 原先用户与部门在这里各自硬编码调身份接口，现在和其它选项控件走同一条链路。
+ */
+const {
+  errors: optionErrors,
+  nodes: optionNodes,
+  refresh: refreshOptions,
+} = useOptionSources(() =>
+  props.fields
+    .filter((field) => isOptionWidget(field.control))
+    .map((field) => ({
+      key: field.field,
+      optionItems: field.controlProps?.options,
+      scope: { field: field.field, form: props.modelValue },
+      source: resolveOptionSource(field.control, field.controlProps),
+    })),
+);
+
+function fieldNodes(key: string): any[] {
+  return optionNodes.value[key] || [];
+}
+
+/**
+ * 字段实际渲染用的选项。
+ *
+ * 只有「静态来源且没配过选项」才退化为演示项（沿用旧行为，避免设计态空白下拉）；
+ * 动态来源（内置 / 流程）未就绪或失败时**不塞演示数据**，否则会把故障伪装成正常。
+ */
+function fieldOptions(field: FormFieldDef): any[] {
+  const nodes = fieldNodes(field.field);
+  if (nodes.length > 0) return nodes;
+  if (
+    resolveOptionSource(field.control, field.controlProps).kind !== 'static'
+  ) {
+    return [];
+  }
+  if (field.control === 'radio') {
+    return [
+      { label: '是 / 选项 A', value: 'A' },
+      { label: '否 / 选项 B', value: 'B' },
+    ];
+  }
+  if (field.control === 'select') {
+    return [
+      { label: '选项 1', value: 'opt1' },
+      { label: '选项 2', value: 'opt2' },
+    ];
+  }
+  if (field.control === 'checkbox') {
+    return [
+      { label: '选项 A', value: 'A' },
+      { label: '选项 B', value: 'B' },
+    ];
+  }
+  return [];
+}
+
+/** 被 `{{字段}}` 引用的字段值拼接，用于判断是否需要重新取数 */
+function watchedValues(): string {
+  const watched = new Set<string>();
+  for (const field of props.fields) {
+    if (!isOptionWidget(field.control)) continue;
+    for (const name of templateFields(
+      resolveOptionSource(field.control, field.controlProps).params,
+    )) {
+      watched.add(name);
+    }
+  }
+  return [...watched]
+    .map((name) => safeJsonStringify(props.modelValue[name]))
+    .join('|');
+}
 
 onMounted(() => {
-  const controls = new Set(props.fields.map((field) => field.control));
-  if (controls.has('userPicker')) {
-    loadUserOptions().then((items) => {
-      userOptions.value = items;
-    });
-  }
-  if (controls.has('deptPicker')) {
-    loadDeptTree().then((items) => {
-      deptTree.value = items;
-    });
-  }
+  void refreshOptions();
+});
+
+watch(watchedValues, () => {
+  void refreshOptions();
 });
 
 watch(
@@ -283,6 +352,13 @@ function tableColumns(field: FormFieldDef) {
         >
           {{ field.span || (isCollection(field) ? 24 : 12) }}/24
         </span>
+      </div>
+
+      <div
+        v-if="optionErrors[field.field]"
+        class="mb-1 text-[11px] text-red-500"
+      >
+        选项数据源：{{ optionErrors[field.field] }}
       </div>
 
       <!-- 明细表格 -->
@@ -518,7 +594,7 @@ function tableColumns(field: FormFieldDef) {
         v-else-if="field.control === 'userPicker'"
         :disabled="isReadonly(field) || designer"
         :mode="field.controlProps?.multiple ? 'multiple' : undefined"
-        :options="userOptions"
+        :options="fieldNodes(field.field)"
         :placeholder="field.placeholder || '选择用户'"
         :value="modelValue[field.field] as any"
         show-search
@@ -528,9 +604,10 @@ function tableColumns(field: FormFieldDef) {
       <TreeSelect
         v-else-if="field.control === 'deptPicker'"
         :disabled="isReadonly(field) || designer"
+        :field-names="{ children: 'children', label: 'label', value: 'value' }"
         :multiple="!!field.controlProps?.multiple"
         :placeholder="field.placeholder || '选择部门'"
-        :tree-data="deptTree"
+        :tree-data="fieldNodes(field.field)"
         :value="modelValue[field.field] as any"
         allow-clear
         class="w-full"
@@ -543,12 +620,7 @@ function tableColumns(field: FormFieldDef) {
         :disabled="isReadonly(field) || designer"
         :placeholder="field.placeholder || '请选择'"
         :value="modelValue[field.field] as any"
-        :options="
-          field.controlProps?.options || [
-            { label: '选项 1', value: 'opt1' },
-            { label: '选项 2', value: 'opt2' },
-          ]
-        "
+        :options="fieldOptions(field)"
         class="w-full"
         @update:value="(v) => patch(field.field, v)"
       />
@@ -556,12 +628,7 @@ function tableColumns(field: FormFieldDef) {
         v-else-if="field.control === 'radio'"
         :disabled="isReadonly(field) || designer"
         :value="modelValue[field.field] as any"
-        :options="
-          field.controlProps?.options || [
-            { label: '是 / 选项 A', value: 'A' },
-            { label: '否 / 选项 B', value: 'B' },
-          ]
-        "
+        :options="fieldOptions(field)"
         @update:value="
           (v) =>
             patch(field.field, (v as any)?.target ? (v as any).target.value : v)
@@ -571,18 +638,14 @@ function tableColumns(field: FormFieldDef) {
         v-else-if="field.control === 'checkbox'"
         :disabled="isReadonly(field) || designer"
         :value="(modelValue[field.field] as any) || []"
-        :options="
-          field.controlProps?.options || [
-            { label: '选项 A', value: 'A' },
-            { label: '选项 B', value: 'B' },
-          ]
-        "
+        :options="fieldOptions(field)"
         @update:value="(v) => patch(field.field, v)"
       />
       <Cascader
         v-else-if="field.control === 'cascader'"
         :disabled="isReadonly(field) || designer"
-        :options="field.controlProps?.options || []"
+        :field-names="{ children: 'children', label: 'label', value: 'value' }"
+        :options="fieldNodes(field.field)"
         :placeholder="field.placeholder || '请选择'"
         :value="(modelValue[field.field] as any) || []"
         class="w-full"
