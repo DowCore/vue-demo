@@ -16,7 +16,12 @@ import {
 } from '@antv/x6';
 
 import { defaultNodeData, nextNodeId, nodeCaption } from './dsl-graph';
-import { getPaletteItem, NODE_PALETTE, nodeSize } from './flow-meta';
+import {
+  allowsMultipleOutEdges,
+  getPaletteItem,
+  NODE_PALETTE,
+  nodeSize,
+} from './flow-meta';
 
 export type SelectionHandler = (payload: {
   kind: '' | 'edge' | 'node';
@@ -31,6 +36,8 @@ export interface FlowCanvasOptions {
   onSelect: SelectionHandler;
   onDirty: () => void;
   onZoom?: (percent: number) => void;
+  /** 非致命提示（如出边基数约束被拦下），由宿主弹 message。 */
+  onNotice?: (text: string, level?: 'info' | 'warning') => void;
   onRequestPanel: () => void;
   onContextMenu: (payload: {
     kind: 'blank' | 'edge' | 'node';
@@ -512,6 +519,7 @@ export class FlowCanvas {
       onSelect,
       onDirty,
       onZoom,
+      onNotice,
       onRequestPanel,
       onContextMenu,
     } = options;
@@ -556,13 +564,36 @@ export class FlowCanvas {
           targetMagnet,
           sourceCell,
           targetCell,
+          edge,
         }) => {
           if (!sourceMagnet || !targetMagnet || sourceCell === targetCell) {
             return false;
           }
           const sourceGroup = sourceMagnet.getAttribute('port-group');
           const targetGroup = targetMagnet.getAttribute('port-group');
-          return sourceGroup !== 'top' && targetGroup !== 'bottom';
+          if (sourceGroup === 'top' || targetGroup === 'bottom') {
+            return false;
+          }
+          // 出边基数约束（与后端 ValidateDsl 口径一致）：
+          // 只有 Condition 允许多出边；其余节点多出的边会被执行器静默丢弃，
+          // 因此从连线阶段就拦掉，避免"画得出、不生效"。
+          if (sourceCell && sourceCell.isNode()) {
+            const kind = String(
+              (sourceCell.getData() as { nodeType?: string })?.nodeType || '',
+            );
+            if (!allowsMultipleOutEdges(kind)) {
+              const outgoing =
+                this.graph.getOutgoingEdges(sourceCell as any) || [];
+              // 拖拽重连既有边时，该边本身不应计入
+              const others = outgoing.filter(
+                (e) => !edge || e.id !== (edge as any).id,
+              );
+              if (others.length > 0) {
+                return false;
+              }
+            }
+          }
+          return true;
         },
       },
       highlighting: {
@@ -632,7 +663,26 @@ export class FlowCanvas {
       onRequestPanel();
     });
     this.graph.on('history:change', () => onDirty());
-    this.graph.on('cell:added', () => onDirty());
+    this.graph.on('cell:added', ({ cell }) => {
+      onDirty();
+      // 兜底：粘贴 / 撤销重做 / 导入 JSON 会绕过 validateConnection，
+      // 这里补一次出边基数检查并提示（后端发布时仍会硬校验）。
+      if (cell.isEdge()) {
+        const src = cell.getSourceCell();
+        if (src && src.isNode()) {
+          const kind = String(
+            (src.getData() as { nodeType?: string })?.nodeType || '',
+          );
+          const outgoing = this.graph.getOutgoingEdges(src) || [];
+          if (!allowsMultipleOutEdges(kind) && outgoing.length > 1) {
+            onNotice?.(
+              `节点「${src.id}」为非分支节点，只允许 1 条出边；多出的连线不会生效（执行器只走第 1 条）。多路请用「条件」节点，并行请用「并行」节点。`,
+              'warning',
+            );
+          }
+        }
+      }
+    });
     this.graph.on('cell:removed', () => onDirty());
     this.graph.on('node:moved', () => onDirty());
     this.graph.on('scale', () => onZoom?.(Math.round(this.graph.zoom() * 100)));

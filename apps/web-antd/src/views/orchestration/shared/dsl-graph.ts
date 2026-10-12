@@ -171,6 +171,45 @@ export interface DslNode {
   payload?: { item?: OutputMapItem[] };
   /** SubFlow */
   subFlowKey?: string;
+  // ---- 控制流原语：ForEach（node.type = ForEach） ----
+  /** 待迭代数组的路径，如 input.items / results.query.items */
+  itemsPath?: string;
+  /** 循环体内单项变量名（默认 item） */
+  itemVar?: string;
+  /** 循环体内下标变量名（默认 index） */
+  indexVar?: string;
+  /** 迭代上限，超过即失败（后端硬上限 10000） */
+  maxIterations?: number;
+  /** failFast | continueOnError */
+  itemErrorMode?: string;
+  /** 并发度，1..16 */
+  concurrency?: number;
+  /** 内联循环体（与 subFlowKey 二选一，LoopBody 优先） */
+  loopBody?: DslSubGraph;
+  // ---- 控制流原语：Parallel（node.type = Parallel） ----
+  /** all | any | allSettled */
+  joinMode?: string;
+  /** 单分支超时（毫秒） */
+  branchTimeoutMs?: number;
+  /** 分支列表，至少 2 条 */
+  branches?: DslBranch[];
+}
+
+/** ForEach 内联循环体 / Parallel 分支内联子图 */
+export interface DslSubGraph {
+  inputs?: InputParameter[];
+  nodes: DslNode[];
+  edges: DslEdge[];
+}
+
+/** Parallel 的单个分支：subFlowKey 与 body 二选一（body 优先） */
+export interface DslBranch {
+  ref: string;
+  subFlowKey?: string;
+  body?: DslSubGraph;
+  inputs?: NodeBinding[];
+  timeoutMs?: number;
+  optional?: boolean;
 }
 
 export interface DslEdge {
@@ -425,6 +464,20 @@ export function nodeCaption(node: DslNode | Record<string, unknown>) {
   if (type === 'Throw') {
     return String(n.failMessage || n.message || '抛异常');
   }
+  if (type === 'ForEach') {
+    const n2 = n as DslNode;
+    const src = String(n2.itemsPath || '');
+    let tag = '';
+    if (n2.subFlowKey) tag = `→ ${n2.subFlowKey}`;
+    else if (n2.loopBody) tag = '↻ 内联循环体';
+    return `${asyncPrefix}循环${src ? ` ${src}` : ''}${tag ? ` ${tag}` : ''}`;
+  }
+  if (type === 'Parallel') {
+    const n2 = n as DslNode;
+    const count = n2.branches?.length || 0;
+    const mode = String(n2.joinMode || 'all');
+    return `${asyncPrefix}并行 ×${count}（${mode}）`;
+  }
   return `${asyncPrefix}${meta.label}`;
 }
 
@@ -504,6 +557,18 @@ return {
     payloadFrom: '',
     payloadJson: '[]',
     subFlowKey: '',
+    // 控制流原语：ForEach
+    itemsPath: '',
+    itemVar: 'item',
+    indexVar: 'index',
+    maxIterations: 1000,
+    itemErrorMode: 'failFast',
+    concurrency: 1,
+    loopBodyJson: '',
+    // 控制流原语：Parallel
+    joinMode: 'all',
+    branchTimeoutMs: 0,
+    branchesJson: '[]',
   };
 
   if (normalized === 'Condition') {
@@ -693,7 +758,135 @@ return {
     base.finalOutputsJson = '[]';
   }
 
+  if (normalized === 'ForEach') {
+    base.refName = 'each1';
+    base.itemsPath = 'input.items';
+    base.itemVar = 'item';
+    base.indexVar = 'index';
+    base.concurrency = 1;
+    base.maxIterations = 100;
+    base.itemErrorMode = 'failFast';
+    base.asyncMode = false;
+    // 循环体默认用内联子图，避免必须先去建一条已发布流程
+    base.subFlowKey = '';
+    base.inputsJson = serializeBindings([
+      { name: 'items', type: 'array', from: 'input.items' },
+    ]);
+    base.outputsJson = serializeBindings([
+      { name: 'items', type: 'array', from: 'items' },
+      { name: 'count', type: 'number', from: 'count' },
+      { name: 'succeeded', type: 'number', from: 'succeeded' },
+      { name: 'failed', type: 'array', from: 'failed' },
+    ]);
+    base.loopBodyJson = JSON.stringify(defaultLoopBodyGraph(), null, 2);
+  }
+
+  if (normalized === 'Parallel') {
+    base.refName = 'fan1';
+    base.joinMode = 'all';
+    base.branchTimeoutMs = 0;
+    base.asyncMode = false;
+    base.inputsJson = '[]';
+    base.outputsJson = serializeBindings([
+      { name: 'ok', type: 'boolean', from: 'ok' },
+      { name: 'succeeded', type: 'number', from: 'succeeded' },
+      { name: 'failed', type: 'array', from: 'failed' },
+    ]);
+    base.branchesJson = JSON.stringify(defaultParallelBranches(), null, 2);
+  }
+
   return base;
+}
+
+/**
+ * ForEach 的默认内联循环体：Start → Assign(item/index) → End。
+ * 结构对齐后端 ControlFlowDemoSeedContributor 的 loopBody 示例。
+ */
+function defaultLoopBodyGraph(): DslSubGraph {
+  return {
+    inputs: [
+      { name: 'item', type: 'object', source: 'input' },
+      { name: 'index', type: 'number', source: 'input' },
+    ],
+    nodes: [
+      { id: 'body_start', type: 'Start' },
+      {
+        id: 'body_pick',
+        type: 'Assign',
+        ref: 'pick',
+        inputs: [
+          { name: 'item', type: 'object', from: 'item' },
+          { name: 'index', type: 'number', from: 'index' },
+        ],
+        outputs: [
+          { name: 'index', type: 'number', from: 'index' },
+          { name: 'value', type: 'object', from: 'item' },
+        ],
+      },
+      {
+        id: 'body_end',
+        type: 'End',
+        finalOutputs: [
+          {
+            name: 'index',
+            type: 'number',
+            from: 'index',
+            visibleTo: { mode: 'all' },
+          },
+          {
+            name: 'value',
+            type: 'object',
+            from: 'value',
+            visibleTo: { mode: 'all' },
+          },
+        ],
+      },
+    ],
+    edges: [
+      { source: 'body_start', target: 'body_pick' },
+      { source: 'body_pick', target: 'body_end' },
+    ],
+  };
+}
+
+/** Parallel 的默认两条分支（各自独立子图，跑在独立上下文里）。 */
+function defaultParallelBranches(): DslBranch[] {
+  return [
+    { ref: 'branchA', body: defaultLinearBody('a') },
+    { ref: 'branchB', body: defaultLinearBody('b'), optional: false },
+  ];
+}
+
+/** 生成一段 Start → Assign → End 的极简子图，prefix 用于避免 id 冲突。 */
+function defaultLinearBody(prefix: string): DslSubGraph {
+  return {
+    nodes: [
+      { id: `${prefix}_s`, type: 'Start' },
+      {
+        id: `${prefix}_a`,
+        type: 'Assign',
+        ref: `${prefix}A`,
+        inputs: [{ name: 'value', type: 'string', from: { literal: '' } }],
+        outputs: [{ name: 'value', type: 'string', from: 'value' }],
+      },
+      {
+        id: `${prefix}_e`,
+        type: 'End',
+        finalOutputs: [
+          {
+            name: 'value',
+            type: 'string',
+            from: 'value',
+            visibleTo: { mode: 'all' },
+          },
+        ],
+      },
+    ],
+    edges: [
+      { source: `${prefix}_s`, target: `${prefix}_a` },
+      { source: `${prefix}_a`, target: `${prefix}_e` },
+    ],
+  };
 }
 
 let refSeq = 1;
@@ -739,6 +932,17 @@ export function nodeRefOf(node: {
 }
 
 /** 收集可引用路径：优先短名 level，其次 setLevel.level；array 附加 .0 / map 列 */
+/** 宽容解析 JSON 数组；失败返回空数组（仅用于提示注入，不打断渲染） */
+function looseJsonArray(raw: string): unknown[] {
+  try {
+    const parsed = JSON.parse(raw || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    // 无效 JSON 不注入提示
+    return [];
+  }
+}
+
 export function collectResultPathHints(graph: FlowGraphData): string[] {
   const shortNames = new Map<string, number>();
   const qualified: string[] = [];
@@ -748,6 +952,13 @@ export function collectResultPathHints(graph: FlowGraphData): string[] {
     const kind = normalizeNodeKind(String(n.data?.nodeType || ''));
     if (!isExecutableKind(kind)) continue;
     const ref = nodeRefOf(n);
+    // Parallel 的分支产出不是静态 outputs，而是按分支 ref 命名：<节点ref>.<分支ref>
+    if (kind === 'Parallel') {
+      for (const b of looseJsonArray(String(n.data?.branchesJson || '[]'))) {
+        const branchRef = String((b as { ref?: string })?.ref || '').trim();
+        if (branchRef) qualified.push(`${ref}.${branchRef}`);
+      }
+    }
     const outputs = parseBindings(String(n.data?.outputsJson || '[]'));
     if (outputs.length === 0) {
       qualified.push(ref);
@@ -874,6 +1085,18 @@ export function dslToGraph(
         payloadFrom: node.payloadFrom || '',
         payloadJson: JSON.stringify(node.payload?.item || [], null, 0),
         subFlowKey: node.subFlowKey || '',
+        itemsPath: node.itemsPath || '',
+        itemVar: node.itemVar || 'item',
+        indexVar: node.indexVar || 'index',
+        maxIterations: node.maxIterations ?? 1000,
+        itemErrorMode: node.itemErrorMode || 'failFast',
+        concurrency: node.concurrency ?? 1,
+        loopBodyJson: node.loopBody
+          ? JSON.stringify(node.loopBody, null, 2)
+          : '',
+        joinMode: node.joinMode || 'all',
+        branchTimeoutMs: node.branchTimeoutMs ?? 0,
+        branchesJson: JSON.stringify(node.branches || [], null, 2),
       },
     };
   });
@@ -1022,6 +1245,62 @@ export function graphToDsl(
       node.subFlowKey = String(p.subFlowKey || '').trim() || undefined;
       node.onError = String(p.onError || 'fail') || 'fail';
       if (!node.resultRoot) node.resultRoot = 'data';
+    }
+
+    if (type === 'ForEach') {
+      const itemsPath = String(p.itemsPath || '').trim();
+      if (itemsPath) node.itemsPath = itemsPath;
+      const itemVar = String(p.itemVar || '').trim();
+      if (itemVar) node.itemVar = itemVar;
+      const indexVar = String(p.indexVar || '').trim();
+      if (indexVar) node.indexVar = indexVar;
+      const maxIter = Number(p.maxIterations);
+      if (Number.isFinite(maxIter) && maxIter > 0) {
+        node.maxIterations = Math.floor(maxIter);
+      }
+      node.itemErrorMode = String(p.itemErrorMode || 'failFast') || 'failFast';
+      const conc = Number(p.concurrency);
+      if (Number.isFinite(conc) && conc > 0) {
+        node.concurrency = Math.min(16, Math.floor(conc));
+      }
+
+      // 循环体：内联子图优先，其次已发布流程；解析失败必须显式回退而非静默丢体
+      const bodyRaw = String(p.loopBodyJson || '').trim();
+      const subKey = String(p.subFlowKey || '').trim();
+      if (bodyRaw) {
+        try {
+          const parsed = JSON.parse(bodyRaw) as DslSubGraph;
+          if (
+            parsed &&
+            Array.isArray(parsed.nodes) &&
+            parsed.nodes.length > 0
+          ) {
+            node.loopBody = parsed;
+            node.subFlowKey = undefined;
+          } else if (subKey) {
+            node.subFlowKey = subKey;
+          }
+        } catch (error) {
+          reportConfigFallback('ForEach 节点 loopBodyJson', error);
+          if (subKey) node.subFlowKey = subKey;
+        }
+      } else if (subKey) {
+        node.subFlowKey = subKey;
+      }
+    }
+
+    if (type === 'Parallel') {
+      node.joinMode = String(p.joinMode || 'all') || 'all';
+      const t = Number(p.branchTimeoutMs);
+      if (Number.isFinite(t) && t > 0) node.branchTimeoutMs = Math.floor(t);
+      try {
+        const parsed = JSON.parse(String(p.branchesJson || '[]'));
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          node.branches = parsed as DslBranch[];
+        }
+      } catch (error) {
+        reportConfigFallback('Parallel 节点 branchesJson', error);
+      }
     }
 
     if (type === 'End') {

@@ -39,6 +39,7 @@ import {
   Drawer,
   Form,
   Input,
+  InputNumber,
   message,
   Popover,
   Segmented,
@@ -64,6 +65,7 @@ import { FlowCanvas } from '../shared/create-flow-x6';
 import {
   collectResultPathHints,
   createDefaultGraph,
+  defaultNodeData,
   dslToGraph,
   graphToDsl,
   listAssignSampleBindings,
@@ -162,6 +164,18 @@ const selected = reactive({
   payloadFrom: '',
   payloadJson: '[]',
   subFlowKey: '',
+  // 控制流原语：ForEach
+  itemsPath: '',
+  itemVar: 'item',
+  indexVar: 'index',
+  maxIterations: 1000,
+  itemErrorMode: 'failFast',
+  concurrency: 1,
+  loopBodyJson: '',
+  // 控制流原语：Parallel
+  joinMode: 'all',
+  branchTimeoutMs: 0,
+  branchesJson: '[]',
   when: '',
   combine: '',
   isDefault: false,
@@ -439,6 +453,14 @@ function addDefaultBranchTemplates() {
   message.success('已按出边顺序设置 combine / else');
 }
 
+/** ForEach：把内联循环体恢复成默认 Start→Assign→End 骨架 */
+function resetLoopBodyTemplate() {
+  const def = defaultNodeData('ForEach').loopBodyJson;
+  selected.loopBodyJson = String(def || '');
+  dirty.value = true;
+  message.success('已恢复默认循环体骨架');
+}
+
 const ctxMenu = reactive({
   visible: false,
   kind: 'blank' as 'blank' | 'edge' | 'node',
@@ -459,7 +481,7 @@ const paletteGroups = computed(() => [
   {
     title: '流程控制',
     items: NODE_PALETTE.filter((x) =>
-      ['Condition', 'End', 'Start'].includes(x.kind),
+      ['Condition', 'End', 'ForEach', 'Parallel', 'Start'].includes(x.kind),
     ),
   },
   {
@@ -519,6 +541,67 @@ const nodeMaskRules = computed<MaskRule[]>({
   set: (value) => {
     selected.maskRulesJson = JSON.stringify(value || [], null, 0);
   },
+});
+
+/** ForEach 内联循环体 JSON 的即时体检结果 */
+const loopBodyParseStatus = computed(() => {
+  const raw = String(selected.loopBodyJson || '').trim();
+  if (!raw) {
+    return {
+      ok: true,
+      text: '未配置内联循环体：将引用「逻辑组件」的已发布流程',
+    };
+  }
+  try {
+    const parsed = JSON.parse(raw) as { nodes?: unknown[]; edges?: unknown[] };
+    const n = Array.isArray(parsed?.nodes) ? parsed.nodes.length : 0;
+    const e = Array.isArray(parsed?.edges) ? parsed.edges.length : 0;
+    if (n === 0) return { ok: false, text: '循环体缺少 nodes，无法执行' };
+    return { ok: true, text: `循环体：${n} 个节点 / ${e} 条连线` };
+  } catch {
+    return { ok: false, text: '循环体 JSON 解析失败（请修正后再保存）' };
+  }
+});
+
+/** Parallel 分支列表 JSON 的即时体检结果（与后端校验口径对齐） */
+const branchesParseStatus = computed(() => {
+  const raw = String(selected.branchesJson || '[]').trim();
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return { ok: false, text: 'branches 必须是数组' };
+    }
+    const refs = parsed.map((b: { ref?: string }) => String(b?.ref || ''));
+    if (parsed.length < 2) {
+      return {
+        ok: false,
+        text: `至少需要 2 条分支（当前 ${parsed.length} 条）`,
+      };
+    }
+    if (refs.some((r) => !r)) {
+      return { ok: false, text: '每条分支都必须有非空 ref' };
+    }
+    if (refs.length !== new Set(refs).size) {
+      return { ok: false, text: `分支 ref 不能重复：${refs.join(', ')}` };
+    }
+    const missing = parsed.filter(
+      (b: { body?: { nodes?: unknown[] }; subFlowKey?: string }) =>
+        !b?.subFlowKey &&
+        !(Array.isArray(b?.body?.nodes) && b.body.nodes.length > 0),
+    ).length;
+    if (missing > 0) {
+      return {
+        ok: false,
+        text: `${missing} 条分支既没有 subFlowKey 也没有 body`,
+      };
+    }
+    if (parsed.length > 16) {
+      return { ok: false, text: `分支数 ${parsed.length} 超过上限 16` };
+    }
+    return { ok: true, text: `${parsed.length} 条分支：${refs.join(', ')}` };
+  } catch {
+    return { ok: false, text: 'branches JSON 解析失败（请修正后再保存）' };
+  }
 });
 
 const rabbitPayloadItems = computed<OutputMapItem[]>({
@@ -643,6 +726,16 @@ function applySelection(kind: '' | 'edge' | 'node', data?: any) {
     selected.payloadFrom = String(p.payloadFrom || '');
     selected.payloadJson = String(p.payloadJson || '[]');
     selected.subFlowKey = String(p.subFlowKey || '');
+    selected.itemsPath = String(p.itemsPath || '');
+    selected.itemVar = String(p.itemVar || 'item');
+    selected.indexVar = String(p.indexVar || 'index');
+    selected.maxIterations = Number(p.maxIterations) || 1000;
+    selected.itemErrorMode = String(p.itemErrorMode || 'failFast');
+    selected.concurrency = Number(p.concurrency) || 1;
+    selected.loopBodyJson = String(p.loopBodyJson || '');
+    selected.joinMode = String(p.joinMode || 'all');
+    selected.branchTimeoutMs = Number(p.branchTimeoutMs) || 0;
+    selected.branchesJson = String(p.branchesJson || '[]');
   } else {
     selected.when = '';
     selected.combine = String(data.properties?.combine || '');
@@ -705,6 +798,16 @@ function syncSelectionToCanvas() {
       payloadFrom: selected.payloadFrom || '',
       payloadJson: selected.payloadJson || '[]',
       subFlowKey: selected.subFlowKey || '',
+      itemsPath: selected.itemsPath || '',
+      itemVar: selected.itemVar || 'item',
+      indexVar: selected.indexVar || 'index',
+      maxIterations: Number(selected.maxIterations) || 1000,
+      itemErrorMode: selected.itemErrorMode || 'failFast',
+      concurrency: Number(selected.concurrency) || 1,
+      loopBodyJson: selected.loopBodyJson || '',
+      joinMode: selected.joinMode || 'all',
+      branchTimeoutMs: Number(selected.branchTimeoutMs) || 0,
+      branchesJson: selected.branchesJson || '[]',
     });
   } else if (selected.kind === 'edge') {
     canvas.setEdgeBranch(selected.id, {
@@ -746,6 +849,10 @@ function initCanvas(data: FlowGraphData) {
     },
     onZoom: (percent) => {
       zoomPercent.value = percent;
+    },
+    onNotice: (text, level = 'warning') => {
+      if (level === 'info') message.info(text);
+      else message.warning(text);
     },
     onRequestPanel: () => {
       panelCollapsed.value = false;
@@ -1050,6 +1157,16 @@ watch(
     selected.payloadFrom,
     selected.payloadJson,
     selected.subFlowKey,
+    selected.itemsPath,
+    selected.itemVar,
+    selected.indexVar,
+    selected.maxIterations,
+    selected.itemErrorMode,
+    selected.concurrency,
+    selected.loopBodyJson,
+    selected.joinMode,
+    selected.branchTimeoutMs,
+    selected.branchesJson,
     selected.when,
     selected.combine,
     selected.isDefault,
@@ -1740,6 +1857,188 @@ onBeforeUnmount(() => {
                 </div>
               </template>
 
+              <template v-if="selected.nodeType === 'ForEach'">
+                <div class="mb-1 text-sm font-medium">循环（ForEach）</div>
+                <div
+                  class="mb-2 text-[11px] leading-relaxed text-muted-foreground"
+                >
+                  对 <code>itemsPath</code> 指向的数组逐项执行循环体。
+                  循环体优先用内联子图；填了
+                  <code>loopBody</code>
+                  时忽略「逻辑组件」引用。产出
+                  <code>items / count / succeeded / failed</code>
+                  ，单项产出 = 循环体 End 的出参。
+                </div>
+                <Form.Item label="迭代数组 itemsPath" required>
+                  <Input
+                    v-model:value="selected.itemsPath"
+                    class="font-mono text-xs"
+                    placeholder="input.items / results.query.items"
+                    @change="dirty = true"
+                  />
+                </Form.Item>
+                <div class="grid grid-cols-2 gap-2">
+                  <Form.Item label="单项变量">
+                    <Input
+                      v-model:value="selected.itemVar"
+                      class="font-mono text-xs"
+                      placeholder="item"
+                      @change="dirty = true"
+                    />
+                  </Form.Item>
+                  <Form.Item label="下标变量">
+                    <Input
+                      v-model:value="selected.indexVar"
+                      class="font-mono text-xs"
+                      placeholder="index"
+                      @change="dirty = true"
+                    />
+                  </Form.Item>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <Form.Item label="并发度（1..16）">
+                    <InputNumber
+                      v-model:value="selected.concurrency"
+                      class="w-full"
+                      :min="1"
+                      :max="16"
+                      @change="dirty = true"
+                    />
+                  </Form.Item>
+                  <Form.Item label="迭代上限">
+                    <InputNumber
+                      v-model:value="selected.maxIterations"
+                      class="w-full"
+                      :min="1"
+                      :max="10000"
+                      @change="dirty = true"
+                    />
+                  </Form.Item>
+                </div>
+                <Form.Item label="单项失败策略">
+                  <Select
+                    v-model:value="selected.itemErrorMode"
+                    class="w-full"
+                    :options="[
+                      { label: '立即中断（failFast）', value: 'failFast' },
+                      {
+                        label: '记录并继续（continueOnError）',
+                        value: 'continueOnError',
+                      },
+                    ]"
+                  />
+                </Form.Item>
+
+                <Divider class="my-3" />
+                <div class="mb-1.5 flex items-center justify-between">
+                  <div class="text-sm font-medium">循环体（内联子图）</div>
+                  <Button
+                    size="small"
+                    type="link"
+                    class="!h-6 !px-1"
+                    @click="resetLoopBodyTemplate"
+                  >
+                    恢复默认
+                  </Button>
+                </div>
+                <Input.TextArea
+                  v-model:value="selected.loopBodyJson"
+                  :rows="8"
+                  class="font-mono text-xs"
+                  placeholder="{ &quot;nodes&quot;: [...], &quot;edges&quot;: [...] }"
+                  @change="dirty = true"
+                />
+                <div
+                  class="mt-1 text-[11px] leading-relaxed"
+                  :class="
+                    loopBodyParseStatus.ok
+                      ? 'text-emerald-600'
+                      : 'text-rose-600'
+                  "
+                >
+                  {{ loopBodyParseStatus.text }}
+                </div>
+                <Form.Item class="mt-2" label="或引用已发布流程（subFlowKey）">
+                  <Select
+                    v-model:value="selected.subFlowKey"
+                    class="w-full"
+                    show-search
+                    allow-clear
+                    option-filter-prop="label"
+                    :options="reusableFlowOptions"
+                    placeholder="留空则使用内联循环体"
+                    @change="dirty = true"
+                  />
+                </Form.Item>
+              </template>
+
+              <template v-if="selected.nodeType === 'Parallel'">
+                <div class="mb-1 text-sm font-medium">并行（Parallel）</div>
+                <div
+                  class="mb-2 text-[11px] leading-relaxed text-muted-foreground"
+                >
+                  各分支在独立上下文并发执行，按 <code>ref</code> 汇合到
+                  <code>results.&lt;本节点ref&gt;.&lt;分支ref&gt;</code>
+                  。<code>all</code> 需全部成功；<code>any</code>
+                  首个成功即返回；<code>allSettled</code> 收集全部结果（失败进
+                  <code>failed</code>）。
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <Form.Item label="汇合模式 joinMode">
+                    <Select
+                      v-model:value="selected.joinMode"
+                      class="w-full"
+                      :options="[
+                        { label: 'all（全部必需）', value: 'all' },
+                        { label: 'any（首个成功）', value: 'any' },
+                        {
+                          label: 'allSettled（全部收集）',
+                          value: 'allSettled',
+                        },
+                      ]"
+                    />
+                  </Form.Item>
+                  <Form.Item label="分支超时（毫秒，0=不限）">
+                    <InputNumber
+                      v-model:value="selected.branchTimeoutMs"
+                      class="w-full"
+                      :min="0"
+                      @change="dirty = true"
+                    />
+                  </Form.Item>
+                </div>
+
+                <Divider class="my-3" />
+                <div class="mb-1.5 text-sm font-medium">分支列表（JSON）</div>
+                <div
+                  class="mb-1.5 text-[10px] leading-relaxed text-muted-foreground"
+                >
+                  每项形如
+                  <code>&#123; "ref": "risk", "inputs": [...], "body": &#123;
+                    "nodes": [...], "edges": [...] &#125; &#125;</code>；也可用
+                  <code>"subFlowKey"</code>
+                  替代 <code>body</code>；<code>"optional": true</code>
+                  允许该分支失败。
+                </div>
+                <Input.TextArea
+                  v-model:value="selected.branchesJson"
+                  :rows="10"
+                  class="font-mono text-xs"
+                  placeholder="[ { &quot;ref&quot;: &quot;a&quot;, &quot;body&quot;: { &quot;nodes&quot;: [], &quot;edges&quot;: [] } } ]"
+                  @change="dirty = true"
+                />
+                <div
+                  class="mt-1 text-[11px] leading-relaxed"
+                  :class="
+                    branchesParseStatus.ok
+                      ? 'text-emerald-600'
+                      : 'text-rose-600'
+                  "
+                >
+                  {{ branchesParseStatus.text }}
+                </div>
+              </template>
+
               <template v-if="selected.nodeType === 'SubFlow'">
                 <div class="mb-1 text-sm font-medium">调用逻辑组件</div>
                 <div
@@ -1796,6 +2095,8 @@ onBeforeUnmount(() => {
                     selected.nodeType !== 'Throw' &&
                     selected.nodeType !== 'RabbitMqPublish' &&
                     selected.nodeType !== 'SubFlow' &&
+                    selected.nodeType !== 'ForEach' &&
+                    selected.nodeType !== 'Parallel' &&
                     !isResourceKind(selected.nodeType)
                   "
                   label="执行方式"
@@ -1836,6 +2137,19 @@ onBeforeUnmount(() => {
                     <code>from</code>
                     默认相对
                     <code>data</code>
+                    。
+                  </template>
+                  <template v-else-if="selected.nodeType === 'ForEach'">
+                    产出固定为
+                    <code>{{ selected.refName || 'each1' }}.items / count /
+                      succeeded / failed</code>
+                    ；单项产出 = 循环体 End 的出参。
+                  </template>
+                  <template v-else-if="selected.nodeType === 'Parallel'">
+                    各分支产出落在
+                    <code>{{ selected.refName || 'fan1' }}.&lt;分支ref&gt;</code>
+                    ；另有
+                    <code>ok / succeeded / failed</code>
                     。
                   </template>
                   <template v-else>

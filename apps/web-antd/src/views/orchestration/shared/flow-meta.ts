@@ -31,16 +31,20 @@ export type FlowStructureKind = 'Condition' | 'End' | 'Start';
 export type FlowExecutableKind =
   | 'Assign'
   | 'Code'
+  | 'ForEach'
   | 'HttpCall'
   | 'Log'
   | 'Mask'
+  | 'Parallel'
   | 'RabbitMqPublish'
   | 'ResourceCreate'
   | 'ResourceDelete'
   | 'ResourceGet'
   | 'ResourceQuery'
   | 'ResourceUpdate'
+  /** 控制流原语：批量迭代（对应后端 node.type = ForEach） */
   | 'SubFlow'
+  /** 控制流原语：并发分支 + 汇合（对应后端 node.type = Parallel） */
   | 'Throw';
 
 export type FlowNodeKind =
@@ -62,7 +66,20 @@ export const EXECUTABLE_NODE_KINDS: FlowExecutableKind[] = [
   'ResourceUpdate',
   'ResourceDelete',
   'SubFlow',
+  'ForEach',
+  'Parallel',
 ];
+
+/**
+ * 允许多条出边的节点类型。
+ * 与后端 FlowExecutor.ValidateDsl 的校验口径严格一致 ——
+ * 其余节点多出边会被执行器 `edges.First()` 静默丢弃，因此前端从连线阶段就拦掉。
+ */
+export const MULTI_OUT_EDGE_KINDS: string[] = ['Condition'];
+
+export function allowsMultipleOutEdges(kind: string): boolean {
+  return MULTI_OUT_EDGE_KINDS.includes(normalizeNodeKind(kind));
+}
 
 export function isExecutableKind(kind: string): boolean {
   const n = normalizeNodeKind(kind);
@@ -258,6 +275,26 @@ export const NODE_PALETTE: NodePaletteItem[] = [
     icon: '■',
     color: '#595959',
     bg: '#fafafa',
+  },
+  {
+    kind: 'ForEach',
+    label: '循环',
+    desc: '数组逐项迭代（ForEach）',
+    shape: 'flow-foreach',
+    geometry: 'rect',
+    icon: '⟳',
+    color: '#d46b08',
+    bg: '#fff7e6',
+  },
+  {
+    kind: 'Parallel',
+    label: '并行',
+    desc: '并发分支 + 汇合',
+    shape: 'flow-parallel',
+    geometry: 'rect',
+    icon: '⋔',
+    color: '#531dab',
+    bg: '#f9f0ff',
   },
 ];
 
