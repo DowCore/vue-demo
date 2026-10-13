@@ -193,6 +193,16 @@ export interface DslNode {
   branchTimeoutMs?: number;
   /** 分支列表，至少 2 条 */
   branches?: DslBranch[];
+  /**
+   * 节点级超时（毫秒）。0/未设置表示不限时，由后端默认 30s 兜底。
+   * 与后端 FlowDslNode.timeoutMs 对应。
+   */
+  timeoutMs?: number;
+  /**
+   * 允许写操作（资源 create/update/delete）在瞬态故障下重试。
+   * 默认关闭；开启时必须同时提供 idempotencyKey 入参，否则发布前校验报错。
+   */
+  retryOnWrite?: boolean;
 }
 
 /** ForEach 内联循环体 / Parallel 分支内联子图 */
@@ -569,6 +579,10 @@ return {
     joinMode: 'all',
     branchTimeoutMs: 0,
     branchesJson: '[]',
+    // 节点级超时（全节点通用；0 表示不限时，后端默认 30000）
+    timeoutMs: 0,
+    // 写操作弹性开关（默认关闭；开启需配 idempotencyKey）
+    retryOnWrite: false,
   };
 
   if (normalized === 'Condition') {
@@ -1097,6 +1111,8 @@ export function dslToGraph(
         joinMode: node.joinMode || 'all',
         branchTimeoutMs: node.branchTimeoutMs ?? 0,
         branchesJson: JSON.stringify(node.branches || [], null, 2),
+        timeoutMs: node.timeoutMs ?? 0,
+        retryOnWrite: node.retryOnWrite ?? false,
       },
     };
   });
@@ -1146,6 +1162,15 @@ export function graphToDsl(
     if (isExecutableKind(type) && !node.ref) {
       node.ref = refName || String(n.id);
     }
+
+    // 节点级超时（全节点通用）。0 或空表示不限时，交由后端默认值（30s）。
+    {
+      const t = Number(p.timeoutMs);
+      if (Number.isFinite(t) && t > 0) node.timeoutMs = Math.floor(t);
+    }
+
+    // 写操作弹性开关：仅资源写类节点有意义，其余类型后端会拒绝，故此处也只对写类节点回写。
+    if (p.retryOnWrite === true) node.retryOnWrite = true;
 
     if (type === 'Condition') {
       const items = parseItems(String(p.itemsJson || '[]'));

@@ -176,6 +176,10 @@ const selected = reactive({
   joinMode: 'all',
   branchTimeoutMs: 0,
   branchesJson: '[]',
+  // 节点级超时（全节点通用；0=后端默认 30000ms）
+  timeoutMs: 0,
+  // 写操作弹性开关（默认关闭；开启需配 idempotencyKey 入参）
+  retryOnWrite: false,
   when: '',
   combine: '',
   isDefault: false,
@@ -698,6 +702,8 @@ function applySelection(kind: '' | 'edge' | 'node', data?: any) {
     selected.bodyMode = String(p.bodyMode || 'auto');
     selected.headersJson = String(p.headersJson || '[]');
     selected.asyncMode = !!p.asyncMode;
+    selected.timeoutMs = Number(p.timeoutMs) || 0;
+    selected.retryOnWrite = p.retryOnWrite === true;
     selected.resultRoot = String(p.resultRoot || '');
     selected.failWhen = String(p.failWhen || '');
     selected.failMessage = String(p.failMessage || '');
@@ -775,6 +781,8 @@ function syncSelectionToCanvas() {
       bodyMode: selected.bodyMode || 'auto',
       headersJson: selected.headersJson || '[]',
       asyncMode: !!selected.asyncMode,
+      timeoutMs: Number(selected.timeoutMs) || 0,
+      retryOnWrite: !!selected.retryOnWrite,
       resultRoot: selected.resultRoot || '',
       failWhen: selected.failWhen || '',
       failMessage: selected.failMessage || '',
@@ -1134,6 +1142,8 @@ watch(
     selected.bodyMode,
     selected.headersJson,
     selected.asyncMode,
+    selected.timeoutMs,
+    selected.retryOnWrite,
     selected.resultRoot,
     selected.failWhen,
     selected.failMessage,
@@ -1673,7 +1683,23 @@ onBeforeUnmount(() => {
                   class="mb-2 rounded-lg bg-amber-500/10 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:text-amber-200"
                 >
                   异步：主链不等待结果，下游不可引用本节点出参（需
-                  Wait，规划中）。后台仍会发请求。
+                  Wait，规划中）。后台仍会发请求。**异步任务失败不会中断主流程。**
+                </div>
+                <Form.Item label="执行超时（毫秒，0=默认30s）">
+                  <InputNumber
+                    v-model:value="selected.timeoutMs"
+                    class="w-full"
+                    :min="0"
+                    :step="1000"
+                    @change="dirty = true"
+                  />
+                </Form.Item>
+                <div
+                  class="mb-2 text-[10px] leading-relaxed text-muted-foreground"
+                >
+                  超时后节点失败并中断流程（不自动重试，避免重复副作用）。
+                  写操作（POST/PUT/DELETE）<strong>不会被自动重试</strong>；GET
+                  由 HTTP 弹性管道自动重试 2 次。
                 </div>
                 <Form.Item label="Method">
                   <Segmented
@@ -2159,6 +2185,31 @@ onBeforeUnmount(() => {
                   </template>
                 </div>
                 <Divider class="my-3" />
+                <template
+                  v-if="
+                    [
+                      'ResourceCreate',
+                      'ResourceUpdate',
+                      'ResourceDelete',
+                    ].includes(selected.nodeType)
+                  "
+                >
+                  <div class="mb-1 text-sm font-medium">写操作弹性</div>
+                  <Form.Item label="瞬态故障时重试写操作">
+                    <Switch
+                      v-model:checked="selected.retryOnWrite"
+                      @change="dirty = true"
+                    />
+                  </Form.Item>
+                  <div
+                    class="mb-2 rounded-lg bg-amber-500/10 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:text-amber-200"
+                  >
+                    写操作（增/改/删）<strong>默认不重试</strong>
+                    ——重试可能造成重复副作用。开启后必须同时在「输入参数」中提供
+                    <code>idempotencyKey</code>（字面量或路径绑定），否则发布校验会失败。
+                  </div>
+                  <Divider class="my-3" />
+                </template>
                 <template v-if="selected.nodeType !== 'Throw'">
                   <div class="mb-1 text-sm font-medium">
                     {{

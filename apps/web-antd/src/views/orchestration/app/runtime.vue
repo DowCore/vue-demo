@@ -15,6 +15,7 @@ import { Page } from '@vben/common-ui';
 import { Button, Drawer, message, Modal, Space, Table } from 'ant-design-vue';
 
 import {
+  batchDeleteAppResourceRecordsApi,
   createAppResourceRecordApi,
   deleteAppResourceRecordApi,
   getAppResourceRecordApi,
@@ -508,8 +509,19 @@ async function runBatchAction(action: ActionDef) {
         action.confirmText || `删除选中的 ${selectedIds.value.length} 条？`,
       okType: 'danger',
       async onOk() {
-        for (const id of selectedIds.value.slice(0, action.batchLimit || 100)) {
-          await deleteAppResourceRecordApi(code, id);
+        const ids = selectedIds.value.slice(0, action.batchLimit || 100);
+        // 单次批量调用：后端仍逐条走资源绑定的 DeleteFlowKey 流程，但共用一次往返 + 一个事务边界。
+        // 比 N 次 HTTP 快，且避免「删到一半失败」留下部分成功的中间态。
+        const res = await batchDeleteAppResourceRecordsApi(code, ids);
+        const skipped =
+          res.skipped ??
+          Math.max(0, (res.requested ?? ids.length) - (res.affected ?? 0));
+        if (skipped > 0) {
+          message.warning(
+            `已删除 ${res.affected} 条，${skipped} 条被流程拒绝或跳过`,
+          );
+        } else {
+          message.success(`已删除 ${res.affected} 条`);
         }
         selectedIds.value = [];
         await loadRows();

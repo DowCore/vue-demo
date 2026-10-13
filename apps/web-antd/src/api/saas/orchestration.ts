@@ -935,6 +935,18 @@ export interface ResourceInvokeResult {
   error?: string;
 }
 
+export interface ResourceBatchInvokeResult {
+  success: boolean;
+  /** 实际生效（删除/写入）条数 */
+  affected: number;
+  /** 提交的总条数 */
+  requested: number;
+  /** 被流程拒绝或跳过的条数 */
+  skipped?: number;
+  /** 每条的失败原因（仅在部分失败时返回） */
+  errors?: Array<{ id: string; error: string }>;
+}
+
 export interface RuntimeFilter {
   items: Array<{
     no: number;
@@ -1217,6 +1229,19 @@ export function deleteAppResourceRecordApi(code: string, id: string) {
   return requestClient.post<ResourceInvokeResult>(
     `/api/orchestration/resources/${encodeURIComponent(code)}/delete`,
     { id },
+  );
+}
+
+/**
+ * 批量删除记录。
+ * 语义与单条 delete **完全一致**（仍然调资源绑定的 DeleteFlowKey 流程，
+ * 每条都走一遍编排），只是把 N 次 HTTP 往返收成 1 次、并共用一个事务边界。
+ * 返回 affected = 实际删除条数，requested = 提交条数（差值即被流程拒绝/跳过的条数）。
+ */
+export function batchDeleteAppResourceRecordsApi(code: string, ids: string[]) {
+  return requestClient.post<ResourceBatchInvokeResult>(
+    `/api/orchestration/resources/${encodeURIComponent(code)}/batch-delete`,
+    { ids },
   );
 }
 
