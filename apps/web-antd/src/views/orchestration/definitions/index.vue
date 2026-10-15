@@ -61,6 +61,10 @@ const runForm = reactive({
   variablesJson: '{\n  "amount": 1500\n}',
 });
 
+function demoEditable(record: FlowDefinition) {
+  return !!record.isSystem && String(record.code || '').startsWith('cf-');
+}
+
 const stats = computed(() => {
   const all = items.value;
   return {
@@ -405,12 +409,16 @@ onMounted(load);
                   type="code"
                 >
                   <Button
-                    :disabled="!!(record as FlowDefinition).isSystem"
                     size="small"
                     type="link"
                     @click="openDesigner(record as FlowDefinition)"
                   >
-                    设计
+                    {{
+                      (record as FlowDefinition).isSystem &&
+                      !demoEditable(record as FlowDefinition)
+                        ? '查看'
+                        : '设计'
+                    }}
                   </Button>
                 </AccessControl>
                 <AccessControl
@@ -439,7 +447,10 @@ onMounted(load);
                   type="code"
                 >
                   <Button
-                    :disabled="!!(record as FlowDefinition).isSystem"
+                    :disabled="
+                      !!(record as FlowDefinition).isSystem &&
+                      !demoEditable(record as FlowDefinition)
+                    "
                     size="small"
                     type="link"
                     @click="publish(record as FlowDefinition)"

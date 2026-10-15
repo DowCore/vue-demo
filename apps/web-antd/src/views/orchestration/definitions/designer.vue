@@ -1,6 +1,8 @@
 <script lang="ts" setup>
 import type {
   ConditionItem,
+  DslBranch,
+  DslSubGraph,
   FlowGraphData,
   InputParameter,
   MaskRule,
@@ -63,16 +65,23 @@ import CodeScriptHelp from '../shared/code-script-help.vue';
 import ConditionItemsEditor from '../shared/condition-items-editor.vue';
 import { FlowCanvas } from '../shared/create-flow-x6';
 import {
+  buildLoopScriptBody,
   collectResultPathHints,
   createDefaultGraph,
+  defaultLoopScript,
   defaultNodeData,
   dslToGraph,
   graphToDsl,
+  isPassthroughAssignLoop,
   listAssignSampleBindings,
+  loopProcessScript,
+  loopScriptSamples,
   parseBindings,
   parseDsl,
   parseGraph,
   parseItems,
+  readLoopScript,
+  retargetLoopScript,
   serializeBindings,
   serializeItems,
 } from '../shared/dsl-graph';
@@ -112,6 +121,7 @@ const selectionMode = ref(false);
 const showMiniMap = ref(true);
 const helpOpen = ref(false);
 const status = ref(0);
+const readOnly = ref(false);
 const publishedVersion = ref<number | undefined>();
 const zoomPercent = ref(100);
 const definitionId = computed(() => String(route.query.id || ''));
@@ -547,7 +557,181 @@ const nodeMaskRules = computed<MaskRule[]>({
   },
 });
 
-/** ForEach 内联循环体 JSON 的即时体检结果 */
+function writeLoopScript(script: string) {
+  selected.loopBodyJson = JSON.stringify(
+    buildLoopScriptBody(
+      script,
+      selected.itemVar || 'item',
+      selected.indexVar || 'index',
+    ),
+    null,
+    2,
+  );
+  dirty.value = true;
+}
+
+function writeBranches(branches: DslBranch[]) {
+  selected.branchesJson = JSON.stringify(branches, null, 2);
+  dirty.value = true;
+}
+
+function bindingText(from: NodeBinding['from'] | undefined) {
+  if (typeof from === 'string') return from;
+  if (from && typeof from === 'object' && 'literal' in from) {
+    return `literal:${JSON.stringify(from.literal)}`;
+  }
+  return '';
+}
+
+function parseBindingText(text: string): NodeBinding['from'] {
+  const raw = text.trim();
+  if (raw.startsWith('literal:')) {
+    const body = raw.slice('literal:'.length);
+    try {
+      return { literal: JSON.parse(body) };
+    } catch {
+      return { literal: body };
+    }
+  }
+  return raw;
+}
+
+function branchOutputs(branch: DslBranch): NodeBinding[] {
+  if (branch.outputs?.length) return branch.outputs;
+  const end = branch.body?.nodes?.find(
+    (node) => String(node.type || '').toLowerCase() === 'end',
+  );
+  return (end?.finalOutputs || [])
+    .filter((item) => item.name)
+    .map((item) => ({
+      name: item.name,
+      type: item.type,
+      from: item.from || item.name,
+    }));
+}
+
+function patchBranch(
+  index: number,
+  patch: Partial<DslBranch>,
+  dropBody = false,
+) {
+  const next = parsedBranches.value.map((branch, i) => {
+    if (i !== index) return branch;
+    const merged: DslBranch = { ...branch, ...patch };
+    if (dropBody) delete merged.body;
+    return merged;
+  });
+  writeBranches(next);
+}
+
+function patchBranchBindings(
+  index: number,
+  key: 'inputs' | 'outputs',
+  rows: NodeBinding[],
+) {
+  patchBranch(index, { [key]: rows });
+}
+
+function addParallelBranch() {
+  const used = new Set(parsedBranches.value.map((branch) => branch.ref));
+  let n = parsedBranches.value.length + 1;
+  let ref = `branch${n}`;
+  while (used.has(ref)) {
+    n += 1;
+    ref = `branch${n}`;
+  }
+  writeBranches([
+    ...parsedBranches.value,
+    {
+      ref,
+      inputs: [{ name: 'orderId', from: 'input.orderId' }],
+      outputs: [{ name: 'value', from: 'value' }],
+    },
+  ]);
+}
+
+function removeParallelBranch(index: number) {
+  if (parsedBranches.value.length <= 2) return;
+  writeBranches(parsedBranches.value.filter((_, i) => i !== index));
+}
+
+const parsedLoopBody = computed<DslSubGraph | null>(() => {
+  const raw = String(selected.loopBodyJson || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as DslSubGraph;
+    return Array.isArray(parsed?.nodes) ? parsed : null;
+  } catch {
+    return null;
+  }
+});
+
+const loopScript = computed(() => readLoopScript(parsedLoopBody.value));
+
+const loopSamples = computed(() =>
+  loopScriptSamples(selected.itemVar || 'item', selected.indexVar || 'index'),
+);
+
+const loopEditorScript = computed(
+  () =>
+    loopScript.value ??
+    loopProcessScript(selected.itemVar || 'item', selected.indexVar || 'index'),
+);
+
+watch(
+  () =>
+    [
+      selected.id,
+      selected.nodeType,
+      selected.itemVar,
+      selected.indexVar,
+    ] as const,
+  (next, prev) => {
+    if (next[1] !== 'ForEach' || !prev) return;
+    if (next[0] !== prev[0]) return;
+    const script = loopScript.value;
+    if (script === null || script === undefined) return;
+    const updated = retargetLoopScript(
+      script,
+      prev[2] || 'item',
+      next[2] || 'item',
+      prev[3] || 'index',
+      next[3] || 'index',
+    );
+    if (updated !== script) writeLoopScript(updated);
+  },
+);
+
+watch(
+  () =>
+    [
+      selected.id,
+      selected.nodeType,
+      selected.loopBodyJson,
+      readOnly.value,
+    ] as const,
+  () => {
+    if (readOnly.value || selected.nodeType !== 'ForEach') return;
+    if (!isPassthroughAssignLoop(parsedLoopBody.value)) return;
+    writeLoopScript(
+      defaultLoopScript(
+        selected.itemVar || 'item',
+        selected.indexVar || 'index',
+      ),
+    );
+  },
+  { flush: 'pre' },
+);
+
+const parsedBranches = computed<DslBranch[]>(() => {
+  try {
+    const parsed = JSON.parse(String(selected.branchesJson || '[]'));
+    return Array.isArray(parsed) ? (parsed as DslBranch[]) : [];
+  } catch {
+    return [];
+  }
+});
+
 const loopBodyParseStatus = computed(() => {
   const raw = String(selected.loopBodyJson || '').trim();
   if (!raw) {
@@ -911,6 +1095,8 @@ async function load() {
     meta.category = detail.category || '';
     meta.isReusable = !!detail.isReusable;
     status.value = detail.status;
+    readOnly.value =
+      !!detail.isSystem && !String(detail.code || '').startsWith('cf-');
     publishedVersion.value = detail.publishedVersion;
 
     const existing = parseGraph(detail.graphJson);
@@ -957,7 +1143,7 @@ async function load() {
 }
 
 function onPaletteMouseDown(kind: FlowNodeKind, e: MouseEvent) {
-  if (!canvas) return;
+  if (readOnly.value || !canvas) return;
   canvas.startDrag(kind, e);
 }
 
@@ -1018,6 +1204,10 @@ function menuSetDefault() {
 }
 
 async function save() {
+  if (readOnly.value) {
+    message.info('系统流程只读，不能保存');
+    return;
+  }
   if (!canvas) return;
   saving.value = true;
   try {
@@ -1044,6 +1234,10 @@ async function save() {
 }
 
 async function publish() {
+  if (readOnly.value) {
+    message.info('系统流程只读，不能发布');
+    return;
+  }
   await save();
   await publishFlowDefinitionApi(definitionId.value);
   publishedVersion.value = (publishedVersion.value ?? 0) + 1;
@@ -1212,9 +1406,11 @@ onBeforeUnmount(() => {
         <div class="flex flex-wrap items-center gap-2">
           <Input
             v-model:value="meta.name"
+            :disabled="readOnly"
             class="max-w-[220px] border-0 bg-transparent px-0 text-base font-semibold shadow-none"
             @change="dirty = true"
           />
+          <Tag v-if="readOnly" color="purple">只读</Tag>
           <Tag :color="definitionStatusMeta[status]?.color">
             {{ definitionStatusMeta[status]?.text }}
           </Tag>
@@ -1233,7 +1429,12 @@ onBeforeUnmount(() => {
           :codes="['Orchestration.Definitions.Update']"
           type="code"
         >
-          <Button :loading="saving" type="primary" @click="save">
+          <Button
+            :disabled="readOnly"
+            :loading="saving"
+            type="primary"
+            @click="save"
+          >
             <template #icon><IconifyIcon icon="lucide:save" /></template>
             保存
           </Button>
@@ -1250,7 +1451,7 @@ onBeforeUnmount(() => {
           :codes="['Orchestration.Definitions.Publish']"
           type="code"
         >
-          <Button ghost type="primary" @click="publish">
+          <Button :disabled="readOnly" ghost type="primary" @click="publish">
             <template #icon><IconifyIcon icon="lucide:rocket" /></template>
             发布为 API
           </Button>
@@ -1379,9 +1580,17 @@ onBeforeUnmount(() => {
       </Tooltip>
     </div>
 
+    <div
+      v-if="readOnly"
+      class="border-border bg-muted/40 text-muted-foreground shrink-0 border-b px-3 py-1.5 text-xs"
+    >
+      系统流程的画布、保存和发布保持锁定。循环脚本可以改，改完用右上角「试运行」看每一项的结果。
+    </div>
+
     <div class="flex min-h-0 flex-1">
       <aside
         class="border-border bg-card w-[232px] shrink-0 overflow-y-auto border-r"
+        :class="readOnly ? 'pointer-events-none opacity-60' : ''"
       >
         <div
           class="border-border sticky top-0 z-[1] border-b bg-card/95 px-3 py-2.5 backdrop-blur"
@@ -1956,8 +2165,45 @@ onBeforeUnmount(() => {
                 </Form.Item>
 
                 <Divider class="my-3" />
-                <div class="mb-1.5 flex items-center justify-between">
-                  <div class="text-sm font-medium">循环体（内联子图）</div>
+                <div class="mb-1 text-sm font-medium">循环脚本</div>
+                <div
+                  class="bg-muted/50 mb-2 rounded-md px-2 py-1.5 font-mono text-[11px] leading-relaxed"
+                >
+                  for (const {{ selected.itemVar || 'item' }} of
+                  {{ selected.itemsPath || 'input.items' }}) &#123;
+                </div>
+                <div class="mb-1.5 flex flex-wrap gap-1">
+                  <Button
+                    v-for="sample in loopSamples"
+                    :key="sample.title"
+                    size="small"
+                    @click="writeLoopScript(sample.script)"
+                  >
+                    {{ sample.title }}
+                  </Button>
+                </div>
+                <Input.TextArea
+                  :rows="12"
+                  :value="loopEditorScript"
+                  class="font-mono text-xs"
+                  @update:value="writeLoopScript(String($event || ''))"
+                />
+                <div class="mt-1 font-mono text-[11px]">&#125;</div>
+                <div
+                  class="text-muted-foreground mt-1 text-[10px] leading-relaxed"
+                >
+                  花括号里直接处理当前行。<code>{{
+                    selected.itemVar || 'item'
+                  }}</code>
+                  是这一项，<code>{{ selected.indexVar || 'index' }}</code>
+                  是下标。<code>return</code> 的对象写入
+                  <code>items</code>。上面的示例分别是原样带出、明细计价、按数量打标、清洗空行；演示流程把三件事写在同一段里。
+                </div>
+                <div
+                  v-if="!readOnly"
+                  class="mb-1.5 mt-3 flex items-center justify-between"
+                >
+                  <div class="text-sm font-medium">循环体 JSON</div>
                   <Button
                     size="small"
                     type="link"
@@ -1967,23 +2213,25 @@ onBeforeUnmount(() => {
                     恢复默认
                   </Button>
                 </div>
-                <Input.TextArea
-                  v-model:value="selected.loopBodyJson"
-                  :rows="8"
-                  class="font-mono text-xs"
-                  placeholder="{ &quot;nodes&quot;: [...], &quot;edges&quot;: [...] }"
-                  @change="dirty = true"
-                />
-                <div
-                  class="mt-1 text-[11px] leading-relaxed"
-                  :class="
-                    loopBodyParseStatus.ok
-                      ? 'text-emerald-600'
-                      : 'text-rose-600'
-                  "
-                >
-                  {{ loopBodyParseStatus.text }}
-                </div>
+                <template v-if="!readOnly">
+                  <Input.TextArea
+                    v-model:value="selected.loopBodyJson"
+                    :rows="8"
+                    class="font-mono text-xs"
+                    placeholder="{ &quot;nodes&quot;: [...], &quot;edges&quot;: [...] }"
+                    @change="dirty = true"
+                  />
+                  <div
+                    class="mt-1 text-[11px] leading-relaxed"
+                    :class="
+                      loopBodyParseStatus.ok
+                        ? 'text-emerald-600'
+                        : 'text-rose-600'
+                    "
+                  >
+                    {{ loopBodyParseStatus.text }}
+                  </div>
+                </template>
                 <Form.Item class="mt-2" label="或引用已发布流程（subFlowKey）">
                   <Select
                     v-model:value="selected.subFlowKey"
@@ -2035,24 +2283,217 @@ onBeforeUnmount(() => {
                 </div>
 
                 <Divider class="my-3" />
-                <div class="mb-1.5 text-sm font-medium">分支列表（JSON）</div>
-                <div
-                  class="mb-1.5 text-[10px] leading-relaxed text-muted-foreground"
-                >
-                  每项形如
-                  <code>&#123; "ref": "risk", "inputs": [...], "body": &#123;
-                    "nodes": [...], "edges": [...] &#125; &#125;</code>；也可用
-                  <code>"subFlowKey"</code>
-                  替代 <code>body</code>；<code>"optional": true</code>
-                  允许该分支失败。
+                <div class="mb-1 flex items-center justify-between">
+                  <div class="text-sm font-medium">分支</div>
+                  <Button size="small" type="link" @click="addParallelBranch">
+                    添加分支
+                  </Button>
                 </div>
-                <Input.TextArea
-                  v-model:value="selected.branchesJson"
-                  :rows="10"
-                  class="font-mono text-xs"
-                  placeholder="[ { &quot;ref&quot;: &quot;a&quot;, &quot;body&quot;: { &quot;nodes&quot;: [], &quot;edges&quot;: [] } } ]"
-                  @change="dirty = true"
-                />
+                <div
+                  class="text-muted-foreground mb-2 text-[10px] leading-relaxed"
+                >
+                  每条分支调用一条已发布的逻辑编排。入参从当前上下文映射进去，出参从那条流程的返回里取出，汇合后挂在分支名上。
+                </div>
+                <div
+                  v-for="(branch, index) in parsedBranches"
+                  :key="index"
+                  class="border-border mb-2 rounded-md border p-2"
+                >
+                  <div class="mb-2 flex items-center gap-2">
+                    <Input
+                      :value="branch.ref"
+                      class="font-mono"
+                      placeholder="分支名，如 risk"
+                      @update:value="
+                        patchBranch(index, { ref: String($event || '') })
+                      "
+                    />
+                    <Checkbox
+                      :checked="!!branch.optional"
+                      @change="
+                        patchBranch(index, {
+                          optional: !!$event?.target?.checked,
+                        })
+                      "
+                    >
+                      可选
+                    </Checkbox>
+                    <Button
+                      v-if="parsedBranches.length > 2"
+                      danger
+                      size="small"
+                      type="link"
+                      @click="removeParallelBranch(index)"
+                    >
+                      删除
+                    </Button>
+                  </div>
+                  <div class="mb-1 text-[11px]">调用的流程</div>
+                  <Select
+                    :options="reusableFlowOptions"
+                    :value="branch.subFlowKey || undefined"
+                    allow-clear
+                    class="mb-2 w-full"
+                    option-filter-prop="label"
+                    placeholder="选择已发布的逻辑编排"
+                    show-search
+                    @change="
+                      patchBranch(
+                        index,
+                        { subFlowKey: String($event || '') || undefined },
+                        !!$event,
+                      )
+                    "
+                  />
+                  <div
+                    v-if="branch.body && !branch.subFlowKey"
+                    class="text-muted-foreground mb-2 text-[10px] leading-relaxed"
+                  >
+                    这条分支还嵌着旧步骤。选中上面的流程后，改为调用该流程。
+                  </div>
+                  <div class="mb-1 text-[11px]">入参</div>
+                  <div
+                    v-for="(row, rowIndex) in branch.inputs || []"
+                    :key="`in-${index}-${rowIndex}`"
+                    class="mb-1 flex gap-1"
+                  >
+                    <Input
+                      :value="row.name"
+                      class="font-mono"
+                      placeholder="入参名"
+                      @update:value="
+                        patchBranchBindings(
+                          index,
+                          'inputs',
+                          (branch.inputs || []).map((item, i) =>
+                            i === rowIndex
+                              ? { ...item, name: String($event || '') }
+                              : item,
+                          ),
+                        )
+                      "
+                    />
+                    <Input
+                      :value="bindingText(row.from)"
+                      class="font-mono"
+                      placeholder="来源，如 input.orderId"
+                      @update:value="
+                        patchBranchBindings(
+                          index,
+                          'inputs',
+                          (branch.inputs || []).map((item, i) =>
+                            i === rowIndex
+                              ? {
+                                  ...item,
+                                  from: parseBindingText(String($event || '')),
+                                }
+                              : item,
+                          ),
+                        )
+                      "
+                    />
+                    <Button
+                      danger
+                      size="small"
+                      type="link"
+                      @click="
+                        patchBranchBindings(
+                          index,
+                          'inputs',
+                          (branch.inputs || []).filter(
+                            (_, i) => i !== rowIndex,
+                          ),
+                        )
+                      "
+                    >
+                      去掉
+                    </Button>
+                  </div>
+                  <Button
+                    class="!px-0"
+                    size="small"
+                    type="link"
+                    @click="
+                      patchBranchBindings(index, 'inputs', [
+                        ...(branch.inputs || []),
+                        { name: '', from: 'input.' },
+                      ])
+                    "
+                  >
+                    添加入参
+                  </Button>
+                  <div class="mb-1 mt-2 text-[11px]">出参</div>
+                  <div
+                    v-for="(row, rowIndex) in branchOutputs(branch)"
+                    :key="`out-${index}-${rowIndex}`"
+                    class="mb-1 flex gap-1"
+                  >
+                    <Input
+                      :value="row.name"
+                      class="font-mono"
+                      placeholder="出参名"
+                      @update:value="
+                        patchBranchBindings(
+                          index,
+                          'outputs',
+                          branchOutputs(branch).map((item, i) =>
+                            i === rowIndex
+                              ? { ...item, name: String($event || '') }
+                              : item,
+                          ),
+                        )
+                      "
+                    />
+                    <Input
+                      :value="bindingText(row.from)"
+                      class="font-mono"
+                      placeholder="取返回里的字段，如 status"
+                      @update:value="
+                        patchBranchBindings(
+                          index,
+                          'outputs',
+                          branchOutputs(branch).map((item, i) =>
+                            i === rowIndex
+                              ? {
+                                  ...item,
+                                  from: parseBindingText(String($event || '')),
+                                }
+                              : item,
+                          ),
+                        )
+                      "
+                    />
+                    <Button
+                      danger
+                      size="small"
+                      type="link"
+                      @click="
+                        patchBranchBindings(
+                          index,
+                          'outputs',
+                          branchOutputs(branch).filter(
+                            (_, i) => i !== rowIndex,
+                          ),
+                        )
+                      "
+                    >
+                      去掉
+                    </Button>
+                  </div>
+                  <Button
+                    class="!px-0"
+                    size="small"
+                    type="link"
+                    @click="
+                      patchBranchBindings(index, 'outputs', [
+                        ...branchOutputs(branch),
+                        { name: '', from: '' },
+                      ])
+                    "
+                  >
+                    添加出参
+                  </Button>
+                </div>
                 <div
                   class="mt-1 text-[11px] leading-relaxed"
                   :class="

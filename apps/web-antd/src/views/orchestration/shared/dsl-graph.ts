@@ -212,12 +212,13 @@ export interface DslSubGraph {
   edges: DslEdge[];
 }
 
-/** Parallel 的单个分支：subFlowKey 与 body 二选一（body 优先） */
+/** Parallel 的单个分支：调用已发布流程，并在调用点声明入参和出参。body 仅兼容旧内嵌步骤。 */
 export interface DslBranch {
   ref: string;
   subFlowKey?: string;
   body?: DslSubGraph;
   inputs?: NodeBinding[];
+  outputs?: NodeBinding[];
   timeoutMs?: number;
   optional?: boolean;
 }
@@ -813,94 +814,219 @@ return {
 }
 
 /**
- * ForEach 的默认内联循环体：Start → Assign(item/index) → End。
- * 结构对齐后端 ControlFlowDemoSeedContributor 的 loopBody 示例。
+ * 编辑器里看到的是 for 循环体：当前元素、下标已经绑成局部变量。
+ * 真正交给引擎的脚本会在前面补上这两行，从迭代入参 input 里取出它们。
  */
-function defaultLoopBodyGraph(): DslSubGraph {
+function loopPreamble(itemVar = 'item', indexVar = 'index') {
+  const item = safeIdent(itemVar, 'item');
+  const index = safeIdent(indexVar, 'index');
+  const itemKey = JSON.stringify(itemVar || 'item');
+  const indexKey = JSON.stringify(indexVar || 'index');
+  return `const ${item} = input[${itemKey}];\nconst ${index} = Number(input[${indexKey}] || 0);\n`;
+}
+
+function stripLoopPreamble(script: string) {
+  return script.replace(
+    /^const [A-Za-z_$][\w$]* = input\["(?:\\.|[^"\\])*"\];\r?\nconst [A-Za-z_$][\w$]* = Number\(input\["(?:\\.|[^"\\])*"\] \|\| 0\);\r?\n/,
+    '',
+  );
+}
+
+/** 循环体脚本：每一项像 for 循环体一样处理，return 的对象成为 items 的一项。 */
+export function defaultLoopScript(itemVar = 'item', indexVar = 'index') {
+  const item = safeIdent(itemVar, 'item');
+  const index = safeIdent(indexVar, 'index');
+  return `return {
+  index: ${index},
+  value: ${item}
+};`;
+}
+
+/** 一条明细上同时做清洗、计价、打标。演示流程和空循环体都用这段。 */
+export function loopProcessScript(itemVar = 'item', indexVar = 'index') {
+  const item = safeIdent(itemVar, 'item');
+  const index = safeIdent(indexVar, 'index');
+  return `const row = ${item} || {};
+const sku = String(row.sku || '').trim();
+const qty = Number(row.qty || 0);
+const price = Number(row.price || 0);
+return {
+  sku,
+  qty,
+  price,
+  amount: qty * price,
+  riskLevel: qty > 100 ? 'high' : 'normal',
+  keep: Boolean(sku) && qty > 0,
+  index: ${index}
+};`;
+}
+
+export function loopScriptSamples(itemVar = 'item', indexVar = 'index') {
+  const item = safeIdent(itemVar, 'item');
+  const index = safeIdent(indexVar, 'index');
+  return [
+    {
+      title: '带出当前行',
+      script: defaultLoopScript(itemVar, indexVar),
+    },
+    {
+      title: '明细计价',
+      script: `const row = ${item} || {};
+const qty = Number(row.qty || 0);
+const price = Number(row.price || 0);
+return {
+  sku: String(row.sku || ''),
+  qty,
+  price,
+  amount: qty * price,
+  index: ${index}
+};`,
+    },
+    {
+      title: '按数量打标',
+      script: `const row = ${item} || {};
+const qty = Number(row.qty || 0);
+return {
+  sku: String(row.sku || ''),
+  qty,
+  riskLevel: qty > 100 ? 'high' : 'normal',
+  index: ${index}
+};`,
+    },
+    {
+      title: '清洗空行',
+      script: `const row = ${item} || {};
+const sku = String(row.sku || '').trim();
+const qty = Number(row.qty || 0);
+return {
+  sku,
+  qty,
+  keep: Boolean(sku) && qty > 0,
+  index: ${index}
+};`,
+    },
+  ];
+}
+
+function safeIdent(name: string, fallback: string) {
+  return /^[A-Za-z_$][\w$]*$/.test(name || '') ? name : fallback;
+}
+
+/** 把循环脚本收成引擎能跑的内联子图：Start → Code → End，return 对象即该项结果。 */
+export function buildLoopScriptBody(
+  script: string,
+  itemVar = 'item',
+  indexVar = 'index',
+): DslSubGraph {
+  const body = stripLoopPreamble(script).replace(/^\n+/, '');
   return {
-    inputs: [
-      { name: 'item', type: 'object', source: 'input' },
-      { name: 'index', type: 'number', source: 'input' },
-    ],
+    // 不声明 inputs：迭代入参整包进入 input（含当前元素、下标，以及循环节点映射进来的字段）。
+    inputs: [],
     nodes: [
       { id: 'body_start', type: 'Start' },
       {
-        id: 'body_pick',
-        type: 'Assign',
-        ref: 'pick',
-        inputs: [
-          { name: 'item', type: 'object', from: 'item' },
-          { name: 'index', type: 'number', from: 'index' },
-        ],
-        outputs: [
-          { name: 'index', type: 'number', from: 'index' },
-          { name: 'value', type: 'object', from: 'item' },
-        ],
+        id: 'body_code',
+        type: 'Code',
+        ref: 'eachRow',
+        script: `${loopPreamble(itemVar, indexVar)}${body}`,
       },
       {
         id: 'body_end',
         type: 'End',
         finalOutputs: [
           {
-            name: 'index',
-            type: 'number',
-            from: 'index',
-            visibleTo: { mode: 'all' },
-          },
-          {
-            name: 'value',
+            name: 'row',
             type: 'object',
-            from: 'value',
+            from: 'return',
+            promote: true,
             visibleTo: { mode: 'all' },
           },
         ],
       },
     ],
     edges: [
-      { source: 'body_start', target: 'body_pick' },
-      { source: 'body_pick', target: 'body_end' },
+      { source: 'body_start', target: 'body_code' },
+      { source: 'body_code', target: 'body_end' },
     ],
   };
 }
 
-/** Parallel 的默认两条分支（各自独立子图，跑在独立上下文里）。 */
+/** 循环体若是「一段脚本处理当前项」，返回脚本；否则是步骤图，返回 null。 */
+export function readLoopScript(graph?: DslSubGraph | null): null | string {
+  const nodes = graph?.nodes || [];
+  const codes = nodes.filter((node) => node.type === 'Code');
+  const extras = nodes.filter(
+    (node) => !['Code', 'End', 'Start'].includes(String(node.type || '')),
+  );
+  if (codes.length !== 1 || extras.length > 0) return null;
+  return stripLoopPreamble(codes[0]?.script || '');
+}
+
+/** 旧默认循环体：Start → 赋值 index/value → End。这种体只是原样带出，应改成脚本。 */
+export function isPassthroughAssignLoop(graph?: DslSubGraph | null) {
+  const nodes = graph?.nodes || [];
+  if (nodes.length !== 3) return false;
+  const assign = nodes.find((node) => node.type === 'Assign');
+  const hasStart = nodes.some((node) => node.type === 'Start');
+  const hasEnd = nodes.some((node) => node.type === 'End');
+  if (!assign || !hasStart || !hasEnd) return false;
+  const names = (assign.outputs || [])
+    .map((output) => String(output.name || ''))
+    .toSorted()
+    .join(',');
+  return names === 'index,value';
+}
+
+/** 变量名改了之后，把循环体里的局部变量一并改掉，计算逻辑保留。 */
+export function retargetLoopScript(
+  script: string,
+  oldItem: string,
+  newItem: string,
+  oldIndex: string,
+  newIndex: string,
+) {
+  const itemSlot = '\u0000LOOP_ITEM\u0000';
+  const indexSlot = '\u0000LOOP_INDEX\u0000';
+  let next = renameIdent(
+    stripLoopPreamble(script),
+    safeIdent(oldItem, 'item'),
+    itemSlot,
+  );
+  next = renameIdent(next, safeIdent(oldIndex, 'index'), indexSlot);
+  next = next.split(itemSlot).join(safeIdent(newItem, 'item'));
+  return next.split(indexSlot).join(safeIdent(newIndex, 'index'));
+}
+
+function renameIdent(script: string, from: string, to: string) {
+  if (!from || !to || from === to) return script;
+  const escaped = from.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+  return script.replaceAll(new RegExp(`\\b${escaped}\\b`, 'g'), to);
+}
+
+/**
+ * ForEach 的默认内联循环体：对当前元素写一段脚本并 return。
+ */
+function defaultLoopBodyGraph(): DslSubGraph {
+  return buildLoopScriptBody(defaultLoopScript(), 'item', 'index');
+}
+
+/** Parallel 的默认两条分支：选择已发布流程，并写好入参、出参。 */
 function defaultParallelBranches(): DslBranch[] {
   return [
-    { ref: 'branchA', body: defaultLinearBody('a') },
-    { ref: 'branchB', body: defaultLinearBody('b'), optional: false },
+    {
+      ref: 'basic',
+      inputs: [{ name: 'orderId', from: 'input.orderId' }],
+      outputs: [
+        { name: 'orderId', from: 'orderId' },
+        { name: 'status', from: 'status' },
+      ],
+    },
+    {
+      ref: 'risk',
+      inputs: [{ name: 'amount', from: 'input.amount' }],
+      outputs: [{ name: 'riskLevel', from: 'riskLevel' }],
+    },
   ];
-}
-
-/** 生成一段 Start → Assign → End 的极简子图，prefix 用于避免 id 冲突。 */
-function defaultLinearBody(prefix: string): DslSubGraph {
-  return {
-    nodes: [
-      { id: `${prefix}_s`, type: 'Start' },
-      {
-        id: `${prefix}_a`,
-        type: 'Assign',
-        ref: `${prefix}A`,
-        inputs: [{ name: 'value', type: 'string', from: { literal: '' } }],
-        outputs: [{ name: 'value', type: 'string', from: 'value' }],
-      },
-      {
-        id: `${prefix}_e`,
-        type: 'End',
-        finalOutputs: [
-          {
-            name: 'value',
-            type: 'string',
-            from: 'value',
-            visibleTo: { mode: 'all' },
-          },
-        ],
-      },
-    ],
-    edges: [
-      { source: `${prefix}_s`, target: `${prefix}_a` },
-      { source: `${prefix}_a`, target: `${prefix}_e` },
-    ],
-  };
 }
 
 let refSeq = 1;
