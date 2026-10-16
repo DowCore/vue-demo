@@ -417,6 +417,11 @@ export interface FlowScheduleItem {
   description?: string;
   lastFiredAt?: string;
   nextFireAt?: string;
+  maxAttempts: number;
+  retryDelaysSeconds?: number[];
+  lastFireStatus?: number;
+  lastError?: string;
+  consecutiveFailures?: number;
   creationTime?: string;
 }
 
@@ -551,6 +556,8 @@ export function createFlowScheduleApi(data: {
   timeZone?: string;
   variablesJson?: string;
   description?: string;
+  maxAttempts: number;
+  retryDelaysSeconds?: number[];
 }) {
   return requestClient.post<FlowScheduleItem>(
     '/api/orchestration/schedules',
@@ -568,6 +575,8 @@ export function updateFlowScheduleApi(
     variablesJson?: string;
     isEnabled: boolean;
     description?: string;
+    maxAttempts: number;
+    retryDelaysSeconds?: number[];
   },
 ) {
   return requestClient.put<FlowScheduleItem>(
@@ -586,6 +595,47 @@ export function runFlowScheduleNowApi(id: string) {
     instanceId: string;
     error?: string;
   }>(`/api/orchestration/schedules/${id}/run-now`);
+}
+
+export interface FlowScheduleFireAttempt {
+  n: number;
+  instanceId?: string;
+  startedAt: string;
+  finishedAt?: string;
+  success: boolean;
+  error?: string;
+}
+
+export interface FlowScheduleFireItem {
+  id: string;
+  scheduleId: string;
+  triggerKind: number;
+  nominalTimeUtc: string;
+  status: number;
+  attempt: number;
+  maxAttempts: number;
+  nextRetryAt?: string;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+  skipReason?: string;
+  attempts?: FlowScheduleFireAttempt[];
+}
+
+export function getFlowScheduleFiresApi(
+  id: string,
+  params?: { maxResultCount?: number; skipCount?: number; status?: number },
+) {
+  return requestClient.get<OrchestrationPagedResult<FlowScheduleFireItem>>(
+    `/api/orchestration/schedules/${id}/fires`,
+    { params },
+  );
+}
+
+export function retryFlowScheduleFireApi(id: string, fireId: string) {
+  return requestClient.post<FlowScheduleFireItem>(
+    `/api/orchestration/schedules/${id}/fires/${fireId}/retry`,
+  );
 }
 
 /* ---- Managed tables / app resources ---- */
