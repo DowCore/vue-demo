@@ -44,7 +44,7 @@
     "@vueuse/core": "catalog:",
     "ant-design-vue": "catalog:",
     "dayjs": "catalog:",
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "pinia": "catalog:",
     "vue": "catalog:",
     "vue-router": "catalog:"
